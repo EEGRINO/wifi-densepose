@@ -1,0 +1,7 @@
+# Wi-Fi CSI (обязательно для приёма CSI в STA)
+CONFIG_ESP_WIFI_CSI_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+
+# Без раздела coredump в partitions — иначе при первой прошивке возможны предупреждения/ребуты
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=n

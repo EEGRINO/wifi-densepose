@@ -1,0 +1,34 @@
+# Секреты и локальные конфиги редакторов (Continue и т.п.)
+config.json
+!laptop_server/models/config.json
+!laptop_server/temp_models/config.json
+.env
+*.key
+
+# Виртуальные окружения
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# PlatformIO / сборка
+firmware/.pio/
+firmware/.vscode/
+desktop_app/dist/
+desktop_app/build/
+
+# Кэши и дубликаты моделей
+laptop_server/models/.cache/
+laptop_server/temp_models/
+
+# Старые резервные копии (история теперь в git)
+*_backup.py
+
+# Lock-файлы LibreOffice/Word
+.~lock.*#
+~$*
+
+# Пустые заглушки npm
+package-lock.json

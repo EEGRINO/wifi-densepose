@@ -1,0 +1,8 @@
+./venv/bin/python3 nn_pipeline.py
+
+
+cd laptop_server
+  python3 -m http.server 8000 --directory static
+
+
+sudo ping -i 0.05 192.168.31.106

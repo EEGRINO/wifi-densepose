@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RuView Ultimate — CSI</title>
+  <style>
+    :root {
+      --bg: #070a12;
+      --panel: #0f1420;
+      --border: #1e2a3f;
+      --text: #e8eef8;
+      --muted: #7a8aa3;
+      --accent: #3d9eff;
+      --glow: rgba(61, 158, 255, 0.35);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+      background: radial-gradient(1200px 600px at 50% -10%, #122040 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1rem;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      background: rgba(15, 20, 32, 0.85);
+      backdrop-filter: blur(8px);
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.1rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    h1 span { color: var(--accent); }
+    .badge {
+      font-size: 0.7rem;
+      padding: 0.2rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+    }
+    .metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem 1.5rem;
+      margin-left: auto;
+      font-size: 0.8rem;
+    }
+    .metrics b { color: var(--accent); }
+    .udp-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.72rem;
+    }
+    .udp-row .udp-label { color: var(--muted); white-space: nowrap; }
+    .udp-row input {
+      width: 8.2rem;
+      padding: 0.28rem 0.4rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0a0e18;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.72rem;
+    }
+    .udp-row input#udp_port { width: 4.2rem; }
+    .udp-row input#ruview_adr_port { width: 4.2rem; }
+    .ru-main {
+      display: grid;
+      grid-template-columns: 1fr minmax(260px, 300px);
+      grid-template-rows: auto auto auto;
+      gap: 1rem;
+      padding: 1rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .ru-main .obs-card { grid-column: 1 / -1; }
+    .ru-main .heat-col {
+      grid-column: 1;
+      grid-row: 2 / span 2;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .ru-main .side { grid-column: 2; grid-row: 2 / span 2; }
+    @media (max-width: 960px) {
+      .ru-main { grid-template-columns: 1fr; }
+      .ru-main .heat-col, .ru-main .side { grid-column: 1; grid-row: auto; }
+    }
+    .obs-wrap {
+      position: relative;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #05070c;
+      min-height: 280px;
+    }
+    #scene3d {
+      display: block;
+      width: 100%;
+      height: 320px;
+      vertical-align: top;
+    }
+    .obs-hud {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      pointer-events: none;
+      z-index: 2;
+    }
+    .hud-block {
+      background: rgba(7, 10, 18, 0.82);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.45rem 0.65rem;
+      font-size: 0.68rem;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+    .hud-block b { color: var(--accent); font-weight: 600; }
+    .hud-block .hud-title {
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.2rem;
+      color: #5eb0ff;
+    }
+    .hud-unit { font-size: 0.6rem; opacity: 0.7; }
+    #obs-cdn-msg {
+      display: none;
+      margin-top: 0.5rem;
+      font-size: 0.72rem;
+      color: #c9a227;
+      line-height: 1.4;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.75rem;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.2), 0 20px 50px rgba(0,0,0,0.35);
+    }
+    .card h2 {
+      margin: 0 0 0.5rem;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+      background: #05070c;
+    }
+    #heat { aspect-ratio: 16/6; }
+    #graph { aspect-ratio: 16/5; }
+    .side {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .sil-wrap {
+      height: 220px;
+      padding: 0.35rem;
+      background: #05070c;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .sil-wrap svg {
+      width: 100%;
+      max-height: 210px;
+      overflow: visible;
+    }
+    .sil-wrap .limb {
+      stroke: #3d9eff;
+      stroke-width: 3.2;
+      stroke-linecap: round;
+      fill: none;
+      filter: drop-shadow(0 0 4px rgba(61, 158, 255, 0.45));
+    }
+    .sil-wrap .head {
+      fill: rgba(61, 158, 255, 0.35);
+      stroke: #5eb0ff;
+      stroke-width: 2;
+      filter: drop-shadow(0 0 6px rgba(61, 158, 255, 0.5));
+    }
+    .sil-bars {
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 4px;
+      height: 48px;
+      margin-top: 0.35rem;
+      padding: 0.25rem;
+      background: rgba(0,0,0,0.25);
+      border-radius: 6px;
+    }
+    .sil-bar {
+      flex: 1;
+      min-width: 4px;
+      max-width: 12px;
+      border-radius: 3px 3px 0 0;
+      background: linear-gradient(180deg, #5eb0ff, #1a4a7a);
+      opacity: 0.85;
+    }
+    button, .btn {
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, #1a2438, #121a2a);
+      color: var(--text);
+      padding: 0.55rem 1rem;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 0.8rem;
+    }
+    button:hover, .btn:hover { border-color: var(--accent); }
+    button.primary {
+      background: linear-gradient(180deg, #2563a8, #1a4a7a);
+      border-color: #3d7ec4;
+    }
+    #setup {
+      display: none;
+      margin: 1rem;
+      max-width: 480px;
+    }
+    #setup.active { display: block; }
+    label { display: block; font-size: 0.75rem; color: var(--muted); margin: 0.5rem 0 0.2rem; }
+    input {
+      width: 100%;
+      padding: 0.45rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0a0e18;
+      color: var(--text);
+      font-family: inherit;
+    }
+    .row { margin-top: 0.75rem; }
+    .status { font-size: 0.75rem; color: var(--muted); margin-top: 0.5rem; }
+    footer {
+      text-align: center;
+      padding: 1rem;
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+  </style>
+  <script>
+  (function () {
+    var cdn = 'https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js';
+    function fail() { window.__ruviewThreeErr = true; }
+    var s = document.createElement('script');
+    s.src = cdn;
+    s.async = true;
+    s.onerror = fail;
+    s.onload = function () {
+      var o = document.createElement('script');
+      o.src = '/observatory.js';
+      o.async = true;
+      o.onerror = fail;
+      o.onload = function () { window.__ruviewObsReady = true; };
+      document.head.appendChild(o);
+    };
+    document.head.appendChild(s);
+  })();
+  </script>
+</head>
+<body>
+  <div id="setup" class="card">
+    <h2>Настройка RuView</h2>
+    <p class="status">Подключитесь к точке <b>RuView_Setup</b> и откройте эту страницу. Укажите вашу сеть (роутер на <b>канале 13</b>, 802.11n, 20&nbsp;MHz) и IP ПК для UDP CSI (порт 5555).</p>
+    <label>SSID роутера</label>
+    <input id="f_ssid" autocomplete="off" />
+    <label>Пароль Wi‑Fi</label>
+    <input id="f_pass" type="password" autocomplete="off" />
+    <label>IP сервера для UDP (можно пусто)</label>
+    <input id="f_srv" placeholder="192.168.1.50" autocomplete="off" />
+    <label>UDP порт (RUV1 → laptop_server / nn_pipeline)</label>
+    <input id="f_port" type="number" value="5555" />
+    <label>RuView ADR порт (0 = выкл; 5005 для upstream sensing-server в WIFITEST)</label>
+    <input id="f_ruview_adr" type="number" min="0" max="65535" value="0" placeholder="5005" />
+    <div class="row">
+      <button class="primary" id="btn_save">Сохранить и перезагрузить</button>
+    </div>
+    <p id="setup_msg" class="status"></p>
+  </div>
+
+  <div id="dash" style="display:none">
+    <header>
+      <h1>π <span>RuView</span> Ultimate</h1>
+      <span class="badge">Wi‑Fi CSI · ESP32‑S3</span>
+      <div class="metrics">
+        <div>RSSI <b id="m_rssi">—</b> dBm</div>
+        <div>Motion <b id="m_motion">—</b></div>
+        <div>WS <b id="m_ws">offline</b></div>
+      </div>
+      <div class="udp-row" title="UDP CSI на ноутбук (laptop_server/ruview_gateway.py)">
+        <span class="udp-label">UDP → ноут</span>
+        <input id="udp_ip" placeholder="192.168.x.x" autocomplete="off" />
+        <input id="udp_port" type="number" min="1" max="65535" value="5555" />
+        <span class="udp-label">ADR</span>
+        <input id="ruview_adr_port" type="number" min="0" max="65535" value="0" placeholder="5005"
+          title="Формат RuView 0xC5110001 на тот же IP; 0 = не слать" />
+        <button type="button" id="btn_udp_save">Сохранить IP</button>
+      </div>
+      <button class="primary" id="btn_cal">Calibrate</button>
+    </header>
+    <main class="ru-main">
+      <div class="card obs-card">
+        <h2>Observatory — 3D wireframe (в духе <a href="https://ruvnet.github.io/RuView/" target="_blank" rel="noopener" style="color:var(--accent)">RuView</a>)</h2>
+        <p class="status" style="margin:0 0 0.5rem;line-height:1.45;">
+          Демо‑сцена: орбитальная камера, сетка пола, каркас из CSI (не медицинская оценка). Нужен <b>интернет</b> для загрузки Three.js с CDN; без сети остаётся 2D‑силуэт справа.
+        </p>
+        <div class="obs-wrap">
+          <canvas id="scene3d" width="800" height="400"></canvas>
+          <div class="obs-hud">
+            <div class="hud-block">
+              <div class="hud-title">Vital · демо</div>
+              <div>HR <b id="hud_hr">--</b> <span class="hud-unit">BPM</span></div>
+              <div>Resp <b id="hud_resp">--</b> <span class="hud-unit">RPM</span></div>
+            </div>
+            <div class="hud-block">
+              <div>Presence <b id="hud_pres">ABSENT</b></div>
+              <div>Motion <b id="hud_var">--</b></div>
+            </div>
+            <div class="hud-block">
+              <div>Persons <b id="hud_ppl">0</b></div>
+            </div>
+          </div>
+        </div>
+        <p id="obs-cdn-msg">Three.js не загрузился (нет интернета или блокировка CDN). Откройте страницу при доступе в сеть или используйте 2D‑панель.</p>
+      </div>
+      <div class="heat-col">
+        <div class="card">
+          <h2>Тепловая карта поднесущих · время</h2>
+          <canvas id="heat" width="960" height="360"></canvas>
+        </div>
+        <div class="card">
+          <h2>Амплитуды (последний кадр)</h2>
+          <canvas id="graph" width="960" height="300"></canvas>
+        </div>
+      </div>
+      <div class="side">
+        <div class="card">
+          <h2>Радио‑силуэт (CSI → движение конечностей)</h2>
+          <div class="sil-wrap">
+            <svg id="sil-svg" viewBox="0 0 120 200" aria-hidden="true">
+              <g id="sil-root" transform="translate(60,28)">
+                <circle class="head" cx="0" cy="-6" r="11" id="sil-head" />
+                <g id="sil-arm-l" transform="translate(0,8)">
+                  <line class="limb" x1="0" y1="0" x2="-22" y2="38" id="sil-arm-l-line" />
+                </g>
+                <g id="sil-arm-r" transform="translate(0,8)">
+                  <line class="limb" x1="0" y1="0" x2="22" y2="38" id="sil-arm-r-line" />
+                </g>
+                <line class="limb" x1="0" y1="8" x2="0" y2="62" id="sil-torso" />
+                <g id="sil-leg-l" transform="translate(0,62)">
+                  <line class="limb" x1="0" y1="0" x2="-14" y2="52" id="sil-leg-l-line" />
+                </g>
+                <g id="sil-leg-r" transform="translate(0,62)">
+                  <line class="limb" x1="0" y1="0" x2="14" y2="52" id="sil-leg-r-line" />
+                </g>
+              </g>
+            </svg>
+          </div>
+          <div class="sil-bars" id="sil-bars" title="Энергия по полосам поднесущих"></div>
+        </div>
+        <div class="card">
+          <h2>Подсказка</h2>
+          <p class="status" style="line-height:1.5;">
+            2D‑силуэт и 3D‑каркас — <b>эвристика</b> по CSI, не как у полноценного <a href="https://ruvnet.github.io/RuView/" target="_blank" rel="noopener" style="color:var(--accent)">RuView DensePose</a>.
+            HR/Resp в HUD — <b>только визуальный декор</b>. Мало обновлений heatmap — добавьте ping к роутеру или фоновый трафик.
+            Роутер: <b>N</b>, <b>20&nbsp;MHz</b>, фиксированный канал (напр. <b>13</b> в EU).
+          </p>
+        </div>
+      </div>
+    </main>
+    <footer>RuView Ultimate · не медицинское устройство · демонстрация CSI</footer>
+  </div>
+
+  <script>
+(function () {
+  const setup = document.getElementById('setup');
+  const dash = document.getElementById('dash');
+  const heat = document.getElementById('heat');
+  const graph = document.getElementById('graph');
+  const ctxH = heat.getContext('2d');
+  const ctxG = graph.getContext('2d');
+  const ROWS = 100;
+  let cols = 64;
+  const buf = new Float32Array(ROWS * 64);
+  let writeRow = 0;
+  let ws;
+  const N = 64;
+  const targetA = new Float32Array(N);
+  const smoothA = new Float32Array(N);
+  let haveTarget = false;
+  let lastMotion = 0;
+  let lastRssi = -55;
+  let rafOn = false;
+  let obsInitTries = 0;
+  const silBarsEl = document.getElementById('sil-bars');
+  const silBars = [];
+  const elArmL = document.getElementById('sil-arm-l');
+  const elArmR = document.getElementById('sil-arm-r');
+  const elLegL = document.getElementById('sil-leg-l');
+  const elLegR = document.getElementById('sil-leg-r');
+  const elRoot = document.getElementById('sil-root');
+  const elHead = document.getElementById('sil-head');
+
+  function ensureSilBars(n) {
+    while (silBars.length < n) {
+      const d = document.createElement('div');
+      d.className = 'sil-bar';
+      silBarsEl.appendChild(d);
+      silBars.push(d);
+    }
+    while (silBars.length > n) {
+      silBarsEl.removeChild(silBars.pop());
+    }
+  }
+
+  function heatColor(t) {
+    t = Math.max(0, Math.min(1, t));
+    const a = [30, 80, 160];
+    const b = [255, 120, 60];
+    const r = (a[0] + (b[0] - a[0]) * t) | 0;
+    const g = (a[1] + (b[1] - a[1]) * t) | 0;
+    const bl = (a[2] + (b[2] - a[2]) * t) | 0;
+    return `rgb(${r},${g},${bl})`;
+  }
+
+  function drawHeat() {
+    const w = heat.width, h = heat.height;
+    const cw = w / cols;
+    const ch = h / ROWS;
+    let maxv = 1e-6;
+    for (let i = 0; i < buf.length; i++) if (buf[i] > maxv) maxv = buf[i];
+    for (let r = 0; r < ROWS; r++) {
+      const srcR = (writeRow - 1 - r + ROWS * 2) % ROWS;
+      for (let c = 0; c < cols; c++) {
+        const v = buf[srcR * 64 + c] / maxv;
+        ctxH.fillStyle = heatColor(Math.pow(v, 0.45));
+        ctxH.fillRect(c * cw, r * ch, cw + 0.5, ch + 0.5);
+      }
+    }
+  }
+
+  function drawGraphFrom(arr) {
+    const w = graph.width, h = graph.height;
+    ctxG.fillStyle = '#05070c';
+    ctxG.fillRect(0, 0, w, h);
+    let mx = 1e-6;
+    for (let i = 0; i < arr.length; i++) if (arr[i] > mx) mx = arr[i];
+    ctxG.strokeStyle = '#3d9eff';
+    ctxG.lineWidth = 1.5;
+    ctxG.beginPath();
+    const n = arr.length;
+    for (let i = 0; i < n; i++) {
+      const x = (i / Math.max(1, n - 1)) * (w - 8) + 4;
+      const y = h - 4 - (arr[i] / mx) * (h - 12);
+      if (i === 0) ctxG.moveTo(x, y);
+      else ctxG.lineTo(x, y);
+    }
+    ctxG.stroke();
+  }
+
+  function bandEnergies(arr, bands) {
+    const per = Math.max(1, Math.floor(arr.length / bands));
+    const vals = [];
+    for (let b = 0; b < bands; b++) {
+      let s = 0;
+      for (let k = 0; k < per; k++) {
+        const idx = b * per + k;
+        if (idx < arr.length) s += arr[idx];
+      }
+      vals.push(s / per);
+    }
+    return vals;
+  }
+
+  function updateSilBars(arr) {
+    const bands = 12;
+    ensureSilBars(bands);
+    const vals = bandEnergies(arr, bands);
+    let mx = 1e-4;
+    vals.forEach(v => { if (v > mx) mx = v; });
+    for (let i = 0; i < bands; i++) {
+      const hh = 4 + (vals[i] / mx) * 36;
+      silBars[i].style.height = hh + 'px';
+    }
+    return vals;
+  }
+
+  function updateHudRuView(vals, motion, tSec) {
+    const elHr = document.getElementById('hud_hr');
+    if (!elHr) return;
+    const ph = 68 + Math.sin(tSec * 2.1) * 6 + motion * 48;
+    elHr.textContent = String(Math.round(Math.min(118, Math.max(46, ph))));
+    const rp = 14 + Math.cos(tSec * 1.7) * 2.5 + motion * 14;
+    document.getElementById('hud_resp').textContent = String(Math.round(Math.min(28, Math.max(8, rp))));
+    const pres = motion > 0.12 ? 'PRESENT' : 'ABSENT';
+    const hp = document.getElementById('hud_pres');
+    hp.textContent = pres;
+    hp.style.color = pres === 'PRESENT' ? '#5ee8a0' : '#7a8aa3';
+    document.getElementById('hud_var').textContent = motion.toFixed(2);
+    document.getElementById('hud_ppl').textContent = motion > 0.22 ? '1' : '0';
+  }
+
+  function tryInitObservatory() {
+    const canvas = document.getElementById('scene3d');
+    const msg = document.getElementById('obs-cdn-msg');
+    if (!canvas) return;
+    if (typeof window.RuViewObsInit === 'function' && window.RuViewObsInit(canvas)) {
+      if (msg) msg.style.display = 'none';
+      if (window.RuViewObsResize) window.RuViewObsResize();
+      return;
+    }
+    obsInitTries++;
+    if (obsInitTries < 80 && !window.__ruviewThreeErr) {
+      setTimeout(tryInitObservatory, 120);
+    } else if (msg) {
+      msg.style.display = 'block';
+    }
+  }
+
+  function updateSilhouetteSvg(vals, motion, tSec) {
+    const left = (vals[0] + vals[1] + vals[2] + vals[3]) * 0.25;
+    const right = (vals[8] + vals[9] + vals[10] + vals[11]) * 0.25;
+    const mid = (vals[4] + vals[5] + vals[6] + vals[7]) * 0.25;
+    const nL = left / (left + right + 1e-6);
+    const asym = (nL - 0.5) * 2;
+    const drive = Math.min(3, motion * 12 + mid * 0.08);
+    const wob = Math.sin(tSec * 2.2) * (0.04 + drive * 0.06);
+    const wob2 = Math.cos(tSec * 1.7) * (0.03 + drive * 0.05);
+    elRoot.setAttribute('transform', 'translate(60,28) rotate(' + (asym * 8 + wob * 40) + ')');
+    elArmL.setAttribute('transform', 'translate(0,8) rotate(' + (-35 - drive * 22 - asym * 25 + wob2 * 30) + ')');
+    elArmR.setAttribute('transform', 'translate(0,8) rotate(' + (35 + drive * 22 - asym * 25 + wob2 * 30) + ')');
+    elLegL.setAttribute('transform', 'translate(0,62) rotate(' + (-8 - drive * 12 + asym * 18 + wob * 25) + ')');
+    elLegR.setAttribute('transform', 'translate(0,62) rotate(' + (8 + drive * 12 + asym * 18 + wob * 25) + ')');
+    const headR = 9 + Math.min(5, mid * 0.15 + motion * 2);
+    elHead.setAttribute('r', String(headR));
+  }
+
+  function lerpSmooth(alpha) {
+    if (!haveTarget) return;
+    for (let i = 0; i < N; i++) {
+      smoothA[i] += (targetA[i] - smoothA[i]) * alpha;
+    }
+  }
+
+  function tick() {
+    if (!rafOn) return;
+    lerpSmooth(0.35);
+    const tSec = performance.now() * 0.001;
+    drawHeat();
+    drawGraphFrom(smoothA);
+    const vals = updateSilBars(smoothA);
+    updateSilhouetteSvg(vals, lastMotion, tSec);
+    updateHudRuView(vals, lastMotion, tSec);
+    if (typeof window.RuViewObsTick === 'function') {
+      try {
+        window.RuViewObsTick(vals, lastMotion, lastRssi);
+      } catch (e) {}
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function startRaf() {
+    if (rafOn) return;
+    rafOn = true;
+    requestAnimationFrame(tick);
+  }
+
+  function onWsMessage(msg) {
+    const a = msg.a;
+    if (!a || !a.length) return;
+    const n = Math.min(N, a.length);
+    cols = n;
+    for (let i = 0; i < n; i++) targetA[i] = Number(a[i]);
+    for (let i = n; i < N; i++) targetA[i] = 0;
+    if (!haveTarget) {
+      for (let i = 0; i < N; i++) smoothA[i] = targetA[i];
+    }
+    haveTarget = true;
+    const isFresh = msg.fresh !== false;
+    if (isFresh) {
+      for (let c = 0; c < cols; c++) buf[writeRow * 64 + c] = targetA[c];
+      writeRow = (writeRow + 1) % ROWS;
+    }
+    document.getElementById('m_rssi').textContent = msg.rssi != null ? msg.rssi : '—';
+    document.getElementById('m_motion').textContent =
+      msg.motion != null ? msg.motion.toFixed(2) : '—';
+    lastMotion = msg.motion != null ? Number(msg.motion) : 0;
+    if (msg.rssi != null) lastRssi = Number(msg.rssi);
+  }
+
+  function connectWs() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = proto + '//' + location.host + '/ws';
+    ws = new WebSocket(url);
+    document.getElementById('m_ws').textContent = 'connecting';
+    ws.onopen = () => {
+      document.getElementById('m_ws').textContent = 'live';
+      if (!rafOn) startRaf();
+    };
+    ws.onclose = () => {
+      document.getElementById('m_ws').textContent = 'reconnect…';
+      rafOn = false;
+      setTimeout(connectWs, 1500);
+    };
+    ws.onmessage = (ev) => {
+      try {
+        onWsMessage(JSON.parse(ev.data));
+      } catch (e) {}
+    };
+  }
+
+  document.getElementById('btn_cal').onclick = () => {
+    fetch('/api/calibrate', { method: 'POST' }).catch(() => {});
+  };
+
+  async function loadUdpFromDevice() {
+    try {
+      const r = await fetch('/api/status');
+      const j = await r.json();
+      if (j.udp_server != null) document.getElementById('udp_ip').value = j.udp_server;
+      if (j.udp_port != null) document.getElementById('udp_port').value = j.udp_port;
+      if (j.ruview_adr_port != null) document.getElementById('ruview_adr_port').value = j.ruview_adr_port;
+    } catch (e) {}
+  }
+
+  document.getElementById('btn_udp_save').onclick = async () => {
+    const body = {
+      server_ip: document.getElementById('udp_ip').value.trim(),
+      server_port: parseInt(document.getElementById('udp_port').value, 10) || 5555,
+      ruview_adr_port: Math.max(0, parseInt(document.getElementById('ruview_adr_port').value, 10) || 0)
+    };
+    try {
+      const r = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const t = await r.json();
+      if (t.ok) alert('Сохранено. UDP пойдёт на ' + body.server_ip + ':' + body.server_port);
+      else alert(JSON.stringify(t));
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  async function boot() {
+    try {
+      const r = await fetch('/api/status');
+      const j = await r.json();
+      if (j.mode === 'ap') {
+        setup.classList.add('active');
+        dash.style.display = 'none';
+        document.getElementById('btn_save').onclick = async () => {
+          const body = {
+            ssid: document.getElementById('f_ssid').value.trim(),
+            password: document.getElementById('f_pass').value,
+            server_ip: document.getElementById('f_srv').value.trim(),
+            server_port: parseInt(document.getElementById('f_port').value, 10) || 5555,
+            ruview_adr_port: Math.max(0, parseInt(document.getElementById('f_ruview_adr').value, 10) || 0)
+          };
+          const msg = document.getElementById('setup_msg');
+          msg.textContent = 'Отправка…';
+          try {
+            const res = await fetch('/api/provision', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+            const t = await res.json();
+            msg.textContent = t.ok ? 'OK, перезагрузка…' : JSON.stringify(t);
+          } catch (e) {
+            msg.textContent = String(e);
+          }
+        };
+        return;
+      }
+    } catch (e) {}
+    setup.classList.remove('active');
+    dash.style.display = 'block';
+    connectWs();
+    startRaf();
+    loadUdpFromDevice();
+    setTimeout(tryInitObservatory, 80);
+  }
+
+  boot();
+})();
+  </script>
+</body>
+</html>

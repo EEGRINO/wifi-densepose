@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- См. map3d.html — про DevTools Issues и CSP (http.server не шлёт CSP). -->
+  <title>RuView — калибровка позы с камерой</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #3fb950;
+      --warn: #d29922;
+      --line: #58a6ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text);
+      min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 16px;
+    }
+    h1 { font-size: 1.15rem; font-weight: 600; margin: 0 0 12px; }
+    /* Колонка: сначала кнопки — их не перекрывает превью камеры */
+    .stack {
+      display: flex; flex-direction: column; gap: 16px; align-items: stretch;
+      width: 100%; max-width: 720px;
+    }
+    .panel {
+      background: var(--panel); border-radius: 10px; padding: 14px 16px; border: 1px solid #30363d;
+      width: 100%;
+    }
+    .panel.controls { position: relative; z-index: 2; }
+    .video, canvas { display: block; }
+    .video-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 640px;
+      margin: 0 auto;
+      overflow: hidden;
+      border-radius: 8px;
+      background: #000;
+      aspect-ratio: 4 / 3;
+      max-height: min(70vh, 520px);
+      /* Клики идут сквозь область превью — кнопки выше по странице */
+      pointer-events: none;
+    }
+    .video-wrap video {
+      width: 100%; height: 100%; object-fit: cover;
+    }
+    .video-wrap canvas {
+      position: absolute; left: 0; top: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    button {
+      background: #21262d; color: var(--text); border: 1px solid #444; border-radius: 6px;
+      padding: 8px 14px; cursor: pointer; font-size: 0.9rem; margin: 4px 4px 4px 0;
+    }
+    button:hover { background: #30363d; }
+    button.primary { background: #238636; border-color: #238636; }
+    button.primary:hover { background: #2ea043; }
+    button.danger { background: #6e1010; border-color: #8b0000; }
+    .stat { font-size: 0.85rem; color: var(--muted); margin: 6px 0; }
+    .stat strong { color: var(--accent); }
+    .err { color: #f85149; font-size: 0.9rem; margin-top: 8px; }
+    .ok { color: var(--accent); font-size: 0.9rem; margin-top: 8px; }
+    ul.hint { margin: 8px 0 0; padding-left: 1.2em; font-size: 0.88rem; color: var(--muted); line-height: 1.45; }
+    a { color: var(--line); }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <h1>Калибровка CSI → поза (камера + зарядка)</h1>
+  <p style="color:var(--muted);max-width:720px;font-size:0.9rem;margin:0 0 16px;text-align:center;">
+    Включите камеру: поверх видео рисуется скелет MediaPipe — убедитесь, что он совпадает с вами.
+    Одновременно должен идти поток CSI с ESP (тот же WebSocket, что у карты).
+    Открывайте страницу как <code>http://127.0.0.1:8000/…</code> или <code>localhost</code>, а не <code>0.0.0.0</code> — иначе камера и сокет к порту 8765 часто не работают.
+    Выберите <strong>зону конечности</strong> ниже — тогда при отправке буфера CSI попадёт <em>только</em> в эту зону (модель зон на сервере). Двигаете в кадре только выбранной частью тела (как в гайде по зонам).
+    <a href="map3d.html">← Карта 3D</a>
+    · <a href="calibration_guide.html">Гайд по зонам</a>
+  </p>
+
+  <div class="stack">
+    <div class="panel controls">
+      <div>
+        <button type="button" class="primary" id="btn-cam">Включить камеру</button>
+        <button type="button" id="btn-cam-off" disabled>Выключить</button>
+      </div>
+      <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+        <label for="limb-zone" style="font-size:0.88rem;color:var(--muted);">Зона для модели конечностей:</label>
+        <select id="limb-zone" style="background:#21262d;color:var(--text);border:1px solid #444;border-radius:6px;padding:6px 10px;font-size:0.88rem;max-width:100%;">
+          <option value="">— не слать CSI в зону —</option>
+          <option value="head">Голова и шея</option>
+          <option value="r_arm">Правая рука</option>
+          <option value="l_arm">Левая рука</option>
+          <option value="r_leg">Правая нога</option>
+          <option value="l_leg">Левая нога</option>
+          <option value="torso">Торс и таз</option>
+        </select>
+      </div>
+      <div style="margin-top:6px;">
+        <label style="font-size:0.85rem;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="cb-zone-only" />
+          Только эта зона (не копить пары CSI+поза для МНК матрицы позы)
+        </label>
+      </div>
+      <div style="margin-top:10px;">
+        <button type="button" class="primary" id="btn-rec" disabled>Запись пар CSI+поза</button>
+        <button type="button" id="btn-rec-stop" disabled>Стоп</button>
+      </div>
+      <div class="stat">В буфере: <strong id="n-pairs">0</strong> пар · МНК позы на сервере: <strong id="n-srv">0</strong> · CSI по зонам: <strong id="n-limb-srv">—</strong></div>
+      <div class="stat" id="pair-gate" style="font-size:0.82rem;color:var(--warn);">Пары: ждём CSI и позу…</div>
+      <div class="stat" id="train-hint" style="font-size:0.8rem;">МНК: нужно ≥96 пар <em>в nn_pipeline</em> (нажмите «Отправить буфер»).</div>
+      <div>
+        <button type="button" id="btn-flush">Отправить буфер на сервер</button>
+        <button type="button" class="primary" id="btn-train">Обучить матрицу позы (МНК)</button>
+        <button type="button" id="btn-train-limb" title="Нужно ≥2 зоны с данными и ≥24 сэмпла">Обучить модель зон</button>
+      </div>
+      <div>
+        <button type="button" id="btn-clear-local">Очистить буфер</button>
+        <button type="button" id="btn-clear-srv">Очистить пары на сервере</button>
+        <button type="button" class="danger" id="btn-revert">Откат к model-q*.bin</button>
+      </div>
+      <div class="ok" id="msg-box"></div>
+      <ul class="hint">
+        <li>Матрица позы: ≥ ~100 пар; лучше 500–2000. Модель зон: накопите сэмплы в <strong>нескольких</strong> зонах (камера или карта 3D), затем «Обучить модель зон».</li>
+        <li>Нужен поток CSI на WebSocket: <code>nn_pipeline.py</code> или <code>ruview_gateway.py</code> (данные в <code>viz.heights</code> — страница это учитывает).</li>
+        <li>«Сервер» пар — это <strong>процесс</strong> <code>nn_pipeline.py</code> (WebSocket :8765), не страница на :8000. <code>http.server</code> только отдаёт HTML. При адресе <code>0.0.0.0:8000</code> в строке браузера скрипт сам подключается к <code>ws://127.0.0.1:8765</code>.</li>
+        <li>После обучения матрица сохраняется в <code>models/camera_pose_W.npz</code> рядом с <code>nn_pipeline.py</code>.</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <div class="video-wrap" id="vw">
+        <video id="vid" class="video" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div class="stat" id="pose-status">Поза: —</div>
+      <div class="stat" id="csi-status">CSI: ожидание WebSocket…</div>
+      <div class="err" id="err-box" style="display:none;"></div>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  /** Браузер на 0.0.0.0 не открывает ws к тому же хосту надёжно; камера тоже часто требует localhost/127.0.0.1. */
+  function wsHost() {
+    const h = (location.hostname || '').toLowerCase();
+    if (h === '0.0.0.0' || h === '[::]' || h === '::') return '127.0.0.1';
+    return location.hostname || '127.0.0.1';
+  }
+  function wsUrl() { return 'ws://' + wsHost() + ':8765/'; }
+  const BONES16 = [
+    [0,1],[1,2],[2,3],[3,4],[1,5],[5,6],[6,7],[1,14],[14,15],
+    [15,8],[8,9],[9,10],[15,11],[11,12],[12,13]
+  ];
+
+  const vid = document.getElementById('vid');
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  const poseStatus = document.getElementById('pose-status');
+  const csiStatus = document.getElementById('csi-status');
+  const errBox = document.getElementById('err-box');
+  const msgBox = document.getElementById('msg-box');
+
+  let pose = null;
+  let camera = null;
+  let lastHeights = null;
+  let lastCsiTs = 0;
+  let ws = null;
+  let recording = false;
+  const localBuffer = [];
+  let serverPairs = 0;
+  let serverLimbCounts = null;
+  const MIN_TRAIN = 96;
+  const MIN_VIS = 0.45;
+  const LIMB_KEYS = ['head', 'r_arm', 'l_arm', 'r_leg', 'l_leg', 'torso'];
+  /** Свежий CSI (мс) — иначе пара не пишется (как в map3d: viz.heights или heights) */
+  const CSI_FRESH_MS = 900;
+  let lastPoseOk = false;
+  const _csiSrc = { last: null };
+
+  /** Как в nn_pipeline: norm = h / max|h| (64) — запасной путь из raw.amps шлюза */
+  function normalizeRawAmpsTo64(amps) {
+    if (!amps || !Array.isArray(amps) || amps.length < 1) return null;
+    const a = new Float64Array(64);
+    for (let i = 0; i < Math.min(64, amps.length); i++) {
+      const v = Number(amps[i]);
+      a[i] = Number.isFinite(v) ? v : 0;
+    }
+    let mx = 0;
+    for (let i = 0; i < 64; i++) mx = Math.max(mx, Math.abs(a[i]));
+    if (mx < 1e-9) mx = 1e-9;
+    const out = new Array(64);
+    for (let i = 0; i < 64; i++) out[i] = a[i] / mx;
+    return out;
+  }
+
+  function heightsFromPacket(o) {
+    let h = (o.viz && o.viz.heights) || o.heights;
+    if (h && Array.isArray(h) && h.length >= 64) {
+      _csiSrc.last = 'viz';
+      return h;
+    }
+    const amps = o.raw && o.raw.amps;
+    if (amps && Array.isArray(amps)) {
+      const n = normalizeRawAmpsTo64(amps);
+      if (n) {
+        _csiSrc.last = 'raw';
+        return n;
+      }
+    }
+    _csiSrc.last = null;
+    return null;
+  }
+
+  function formatLimbCounts(c) {
+    if (!c || typeof c !== 'object') return '—';
+    const parts = LIMB_KEYS.map((k) => {
+      const n = c[k];
+      return (typeof n === 'number' && n > 0) ? (k.slice(0, 1) + ':' + n) : null;
+    }).filter(Boolean);
+    return parts.length ? parts.join(' ') : '0';
+  }
+
+  function updateTrainUi() {
+    const nSrv = document.getElementById('n-srv');
+    const nLimb = document.getElementById('n-limb-srv');
+    const hint = document.getElementById('train-hint');
+    const btn = document.getElementById('btn-train');
+    if (nSrv) nSrv.textContent = String(serverPairs);
+    if (nLimb) nLimb.textContent = formatLimbCounts(serverLimbCounts);
+    const ok = serverPairs >= MIN_TRAIN;
+    const lz = document.getElementById('limb-zone');
+    const zo = document.getElementById('cb-zone-only');
+    const zoneOnly = zo && zo.checked && lz && lz.value;
+    if (hint) {
+      if (zoneOnly) {
+        hint.innerHTML = 'Режим «только зона»: пары для <strong>матрицы позы</strong> не копятся — после записи отправьте буфер и при необходимости обучите <strong>модель зон</strong>.';
+      } else {
+        hint.innerHTML = ok
+          ? 'Можно обучить матрицу позы: на сервере <strong>' + serverPairs + '</strong> пар.'
+          : 'МНК позы: нужно ≥' + MIN_TRAIN + ' пар (сейчас ' + serverPairs + '). Сначала «Отправить буфер».';
+      }
+    }
+    if (btn) {
+      btn.style.opacity = ok ? '1' : '0.75';
+      btn.title = ok ? 'Обучить линейную матрицу 64×32' : ('На сервере: ' + serverPairs + ' пар, нужно ≥' + MIN_TRAIN);
+    }
+  }
+
+  function showErr(t) {
+    errBox.style.display = t ? 'block' : 'none';
+    errBox.textContent = t || '';
+  }
+  function showMsg(t) {
+    msgBox.textContent = t || '';
+  }
+
+  function finite32(arr) {
+    const a = Array.from(arr, (x) => {
+      const n = typeof x === 'number' ? x : parseFloat(x);
+      return Number.isFinite(n) ? n : 0;
+    });
+    while (a.length < 32) a.push(0);
+    return a.slice(0, 32);
+  }
+
+  function finite64(arr) {
+    const a = Array.from(arr, (x) => {
+      const n = typeof x === 'number' ? x : parseFloat(x);
+      return Number.isFinite(n) ? n : 0;
+    });
+    while (a.length < 64) a.push(0);
+    return a.slice(0, 64);
+  }
+
+  function landmarksToSk32(lm) {
+    if (!lm || lm.length < 29) return null;
+    const vis = (i) => (lm[i].visibility != null ? lm[i].visibility : 1);
+    if (vis(0) < MIN_VIS || vis(11) < MIN_VIS || vis(12) < MIN_VIS) return null;
+    const mid = (a, b) => ({ x: (lm[a].x + lm[b].x) / 2, y: (lm[a].y + lm[b].y) / 2 });
+    const neck = mid(11, 12);
+    const pelvis = mid(23, 24);
+    const spine = { x: (neck.x + pelvis.x) / 2, y: (neck.y + pelvis.y) / 2 };
+    const pts = [
+      lm[0], neck, lm[12], lm[14], lm[16], lm[11], lm[13], lm[15],
+      lm[24], lm[26], lm[28], lm[23], lm[25], lm[27], spine, pelvis
+    ];
+    const out = new Float32Array(32);
+    for (let i = 0; i < 16; i++) {
+      out[i * 2] = pts[i].x;
+      out[i * 2 + 1] = pts[i].y;
+    }
+    return out;
+  }
+
+  function drawSkeleton16(lm, w, h) {
+    const pts = [];
+    const px = (pt) => ({ x: pt.x * w, y: pt.y * h });
+    const mid = (a, b) => ({ x: (lm[a].x + lm[b].x) / 2, y: (lm[a].y + lm[b].y) / 2 });
+    const neck = mid(11, 12);
+    const pelvis = mid(23, 24);
+    const spine = { x: (neck.x + pelvis.x) / 2, y: (neck.y + pelvis.y) / 2 };
+    const p = [
+      lm[0], neck, lm[12], lm[14], lm[16], lm[11], lm[13], lm[15],
+      lm[24], lm[26], lm[28], lm[23], lm[25], lm[27], spine, pelvis
+    ];
+    for (let i = 0; i < 16; i++) {
+      const o = px(p[i]);
+      pts.push(o);
+    }
+    ctx.strokeStyle = 'rgba(0, 255, 200, 0.95)';
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    for (const [a, b] of BONES16) {
+      const A = pts[a], B = pts[b];
+      ctx.beginPath();
+      ctx.moveTo(A.x, A.y);
+      ctx.lineTo(B.x, B.y);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+    for (const q of pts) {
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function updatePairGate() {
+    const el = document.getElementById('pair-gate');
+    if (!el) return;
+    if (!recording) {
+      el.textContent = 'Пары: запись выкл.';
+      el.style.color = 'var(--muted)';
+      return;
+    }
+    const csiFresh = lastHeights && lastHeights.length >= 64 && (Date.now() - lastCsiTs < CSI_FRESH_MS);
+    if (!lastHeights || lastHeights.length < 64) {
+      el.textContent = 'Пары: нет CSI (нужны 64 амплитуды). Запустите ESP→UDP и на ПК: nn_pipeline.py или ruview_gateway.py (ws :8765). Если WS «подключён», но здесь пусто — нет пакетов по UDP.';
+      el.style.color = '#f85149';
+      return;
+    }
+    if (!csiFresh) {
+      el.textContent = 'Пары: CSI устарел (' + Math.round((Date.now() - lastCsiTs) / 1000) + ' c назад) — включите ESP / nn_pipeline или ruview_gateway.';
+      el.style.color = '#f85149';
+      return;
+    }
+    if (!lastPoseOk) {
+      el.textContent = 'Пары: ждём стабильную позу в кадре (видимость точек).';
+      el.style.color = 'var(--warn)';
+      return;
+    }
+    el.textContent = 'Пары: OK — накапливаем CSI+скелет.';
+    el.style.color = 'var(--accent)';
+  }
+
+  function onPoseResults(results) {
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (!results.poseLandmarks) {
+      lastPoseOk = false;
+      poseStatus.textContent = 'Поза: не найдена (встаньте в кадр)';
+      updatePairGate();
+      return;
+    }
+    const lm = results.poseLandmarks;
+    drawSkeleton16(lm, w, h);
+
+    const sk = landmarksToSk32(lm);
+    lastPoseOk = !!sk;
+    const csiOk = lastHeights && lastHeights.length >= 64 && (Date.now() - lastCsiTs < CSI_FRESH_MS);
+    if (sk && recording && csiOk) {
+      localBuffer.push({
+        heights: finite64(lastHeights),
+        skeleton: finite32(sk)
+      });
+      document.getElementById('n-pairs').textContent = String(localBuffer.length);
+      if (localBuffer.length >= 150) flushBuffer(false);
+    }
+    poseStatus.textContent = sk
+      ? 'Поза: OK (16 суставов), запись ' + (recording ? 'идёт' : 'выкл.')
+      : 'Поза: низкая видимость ключевых точек';
+    updatePairGate();
+  }
+
+  function resizeCanvas() {
+    const wrap = document.getElementById('vw');
+    const w = Math.max(2, Math.floor(wrap.clientWidth));
+    const h = Math.max(2, Math.floor(wrap.clientHeight));
+    canvas.width = w;
+    canvas.height = h;
+  }
+
+  document.getElementById('btn-cam').onclick = async () => {
+    showErr('');
+    if (!window.Pose) {
+      showErr('MediaPipe Pose не загрузился (проверьте сеть / CDN).');
+      return;
+    }
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showErr('Камера недоступна: нет getUserMedia (небезопасный контекст?). Откройте страницу по http://127.0.0.1:8000/…');
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 } }, audio: false });
+      vid.srcObject = stream;
+      await vid.play();
+      resizeCanvas();
+      vid.addEventListener('loadedmetadata', resizeCanvas);
+
+      pose = new Pose({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+      });
+      pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+      pose.onResults(onPoseResults);
+
+      camera = new Camera(vid, {
+        onFrame: async () => { await pose.send({ image: vid }); },
+        width: 640,
+        height: 480
+      });
+      camera.start();
+      document.getElementById('btn-cam').disabled = true;
+      document.getElementById('btn-cam-off').disabled = false;
+      document.getElementById('btn-rec').disabled = false;
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      let hint = '';
+      const h = (location.hostname || '').toLowerCase();
+      if (h === '0.0.0.0') {
+        hint = ' Откройте ту же страницу как http://127.0.0.1:' + (location.port || '8000') + location.pathname;
+      } else if (/not allowed|permission|denied/i.test(msg)) {
+        hint = ' Разрешите доступ к камере для этого сайта или откройте по http://127.0.0.1 вместо IP в локальной сети.';
+      }
+      showErr('Камера: ' + msg + hint);
+    }
+  };
+
+  document.getElementById('btn-cam-off').onclick = () => {
+    if (camera) { camera.stop(); camera = null; }
+    if (pose) { pose.close(); pose = null; }
+    if (vid.srcObject) {
+      vid.srcObject.getTracks().forEach((t) => t.stop());
+      vid.srcObject = null;
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    document.getElementById('btn-cam').disabled = false;
+    document.getElementById('btn-cam-off').disabled = true;
+    document.getElementById('btn-rec').disabled = true;
+    document.getElementById('btn-rec-stop').disabled = true;
+    recording = false;
+  };
+
+  document.getElementById('btn-rec').onclick = () => {
+    recording = true;
+    document.getElementById('btn-rec').disabled = true;
+    document.getElementById('btn-rec-stop').disabled = false;
+    {
+      const lz = document.getElementById('limb-zone');
+      const z = lz && lz.value;
+      showMsg(z
+        ? 'Запись: двигайте в кадре в основном выбранную зону («' + (lz.options[lz.selectedIndex] && lz.options[lz.selectedIndex].text) + '»).'
+        : 'Идёт запись: двигайтесь как при зарядке; при необходимости выберите зону и отправьте буфер.');
+    }
+    updatePairGate();
+  };
+  document.getElementById('btn-rec-stop').onclick = () => {
+    recording = false;
+    document.getElementById('btn-rec').disabled = false;
+    document.getElementById('btn-rec-stop').disabled = true;
+    showMsg('Запись остановлена. Отправьте буфер или обучите.');
+    updatePairGate();
+  };
+
+  function connectWs() {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    if (ws && ws.readyState === WebSocket.CONNECTING) return;
+    if (ws) {
+      try { ws.close(); } catch (_) {}
+      ws = null;
+    }
+    ws = new WebSocket(wsUrl());
+    ws.onopen = () => {
+      csiStatus.textContent = 'CSI: WebSocket подключён (' + wsUrl() + ')';
+      try { ws.send(JSON.stringify({ cmd: 'get_status' })); } catch (_) {}
+    };
+    ws.onclose = () => { csiStatus.textContent = 'CSI: отключено — переподключение…'; setTimeout(connectWs, 2000); };
+    ws.onerror = () => { csiStatus.textContent = 'CSI: ошибка WS'; };
+    ws.onmessage = (ev) => {
+      try {
+        const o = JSON.parse(ev.data);
+        const heights = heightsFromPacket(o);
+        if (heights && heights.length >= 64) {
+          lastHeights = heights;
+          lastCsiTs = Date.now();
+        }
+        if (o.type === 'camera_pose_ack') {
+          if (o.n_pairs != null) serverPairs = o.n_pairs;
+          if (o.limb_calib_counts) serverLimbCounts = o.limb_calib_counts;
+          updateTrainUi();
+          let m = o.message || o.status || '';
+          if (o.status === 'batch' && (o.received != null || o.added != null)) {
+            m = (m ? m + ' — ' : '') + 'в JSON: ' + (o.received != null ? o.received : '?') + ', в МНК позы: ' + (o.added != null ? o.added : '?');
+            if (o.limb_zone_added != null && o.limb_zone) {
+              m += ', в зону «' + o.limb_zone + '»: ' + o.limb_zone_added;
+            }
+          }
+          showMsg(m);
+          if (o.status === 'trained' || o.status === 'train_fail') {
+            document.getElementById('btn-train').textContent = 'Обучить матрицу позы (МНК)';
+          }
+        }
+        if (o.type === 'limb_calib_ack') {
+          if (o.counts) serverLimbCounts = o.counts;
+          updateTrainUi();
+          if (o.status === 'trained' || o.status === 'train_fail') {
+            showMsg(o.message || (o.status === 'trained' ? 'Модель зон обучена.' : 'Ошибка обучения зон.'));
+            const b = document.getElementById('btn-train-limb');
+            if (b) b.textContent = 'Обучить модель зон';
+          }
+        }
+        if (o.type === 'status') {
+          if (o.camera_pose_pairs != null) {
+            serverPairs = o.camera_pose_pairs;
+            updateTrainUi();
+          }
+          if (o.limb_calib_counts) {
+            serverLimbCounts = o.limb_calib_counts;
+            updateTrainUi();
+          }
+        }
+      } catch (e) {
+        if (!window.__camWsErr) { window.__camWsErr = true; console.warn('camera_calib: WS JSON/обработчик', e); }
+      }
+    };
+  }
+  document.getElementById('limb-zone').addEventListener('change', () => {
+    const lz = document.getElementById('limb-zone');
+    const zo = document.getElementById('cb-zone-only');
+    if (zo && lz && !lz.value) zo.checked = false;
+    updateTrainUi();
+  });
+
+  connectWs();
+
+  setInterval(() => {
+    if (lastHeights && Date.now() - lastCsiTs < 800) {
+      const tag = _csiSrc.last === 'raw' ? 'raw.amps' : 'viz';
+      csiStatus.textContent = 'CSI: поток OK (' + lastHeights.length + ' ампл., ' + tag + ')';
+    } else if (ws && ws.readyState === WebSocket.OPEN) {
+      csiStatus.textContent = 'CSI: нет пакетов (ESP / UDP?) — ws :8765 есть, но UDP тишина';
+    }
+    if (recording) updatePairGate();
+  }, 500);
+
+  function flushBuffer(quiet) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showErr('Нет WebSocket к nn_pipeline (порт 8765). Запустите nn_pipeline.py.');
+      return;
+    }
+    if (localBuffer.length === 0) {
+      showMsg('Локальный буфер пуст — сначала запись с включённой камерой.');
+      return;
+    }
+    const n = Math.min(150, localBuffer.length);
+    const chunk = localBuffer.slice(0, n);
+    const limbSel = document.getElementById('limb-zone');
+    const zoneOnly = document.getElementById('cb-zone-only');
+    const limbZone = limbSel && limbSel.value ? limbSel.value : '';
+    const skipCam = !!(limbZone && zoneOnly && zoneOnly.checked);
+    const batch = { cmd: 'camera_pose_batch', samples: chunk };
+    if (limbZone) {
+      batch.limb_zone = limbZone;
+      batch.skip_camera_pose = skipCam;
+    }
+    let payload;
+    try {
+      payload = JSON.stringify(batch, (_, v) => {
+        if (typeof v === 'number' && !Number.isFinite(v)) return 0;
+        return v;
+      });
+    } catch (e) {
+      showErr('Ошибка подготовки JSON: ' + e);
+      return;
+    }
+    try {
+      ws.send(payload);
+    } catch (e) {
+      showErr('Ошибка отправки по WebSocket: ' + e);
+      return;
+    }
+    localBuffer.splice(0, n);
+    document.getElementById('n-pairs').textContent = String(localBuffer.length);
+    if (!quiet) showMsg('Отправка ' + n + ' пар в nn_pipeline…');
+    try { ws.send(JSON.stringify({ cmd: 'get_status' })); } catch (_) {}
+  }
+
+  document.getElementById('btn-flush').onclick = () => flushBuffer(true);
+  document.getElementById('btn-train').onclick = () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showErr('Нет соединения с сервером (' + wsUrl() + '). Запустите nn_pipeline.py.');
+      return;
+    }
+    if (serverPairs < MIN_TRAIN) {
+      showErr('В nn_pipeline только ' + serverPairs + ' пар. Нужно ≥' + MIN_TRAIN + ': нажмите «Отправить буфер», пока в буфере есть данные.');
+      return;
+    }
+    showErr('');
+    showMsg('Идёт обучение на сервере…');
+      document.getElementById('btn-train').textContent = 'Обучение…';
+    try {
+      ws.send(JSON.stringify({ cmd: 'camera_pose_train' }));
+    } catch (e) {
+      showErr(String(e));
+      document.getElementById('btn-train').textContent = 'Обучить матрицу позы (МНК)';
+    }
+  };
+  document.getElementById('btn-train-limb').onclick = () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showErr('Нет соединения с nn_pipeline (ws :8765).');
+      return;
+    }
+    showErr('');
+    showMsg('Обучение модели зон на сервере…');
+    const b = document.getElementById('btn-train-limb');
+    if (b) b.textContent = 'Обучение…';
+    try {
+      ws.send(JSON.stringify({ cmd: 'limb_calib_train' }));
+    } catch (e) {
+      showErr(String(e));
+      if (b) b.textContent = 'Обучить модель зон';
+    }
+  };
+  document.getElementById('btn-clear-local').onclick = () => {
+    localBuffer.length = 0;
+    document.getElementById('n-pairs').textContent = '0';
+    showMsg('Локальный буфер очищен.');
+  };
+  document.getElementById('btn-clear-srv').onclick = () => {
+    if (ws && ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ cmd: 'camera_pose_clear' }));
+  };
+  document.getElementById('btn-revert').onclick = () => {
+    if (ws && ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ cmd: 'camera_pose_revert' }));
+  };
+
+  window.addEventListener('resize', resizeCanvas);
+  requestAnimationFrame(resizeCanvas);
+  updateTrainUi();
+  updatePairGate();
+})();
+  </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# RuView — app ~3.2MB + LittleFS 2MB (влезает и в 8MB, и в 16MB Flash)
+# otadata на 0xe000 обязателен: загрузчик Arduino всегда пишет туда boot_app0.bin —
+# без этого раздела запись затирала конец NVS (настройки Wi-Fi).
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+factory,  app,  factory, 0x10000, 0x320000,
+storage,  data, spiffs, 0x330000,0x200000,

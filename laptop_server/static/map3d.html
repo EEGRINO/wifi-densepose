@@ -1,0 +1,3675 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- DevTools→Issues «CSP / eval»: у `python -m http.server` заголовок CSP не отдаётся. Сообщение часто из-за аудита CDN (Three/MediaPipe) или расширения браузера — не равно «нет CSI». CSI: UDP→nn_pipeline→ws:8765. -->
+  <title>RuView — WiFi DensePose</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      color-scheme: dark;
+      --bg:     #04060e;
+      --panel:  rgba(5,9,20,0.96);
+      --border: #0e2035;
+      --accent: #3d9eff;
+      --cyan:   #00ffcc;
+      --text:   #c8d4e8;
+      --muted:  #4a6080;
+      --surface: #0a1020;
+      --surface-2: #080e1c;
+      --surface-3: #060d1c;
+      --drawer-bg: rgba(4,7,16,0.97);
+      --drawer-toggle-hover: #0a1428;
+      --input-bg: #040a18;
+      --prog-track: #0d1a28;
+      --scrollbar-thumb: #1a3050;
+      --vitals-bg: rgba(3,7,18,0.82);
+      --vitals-label: #4a6888;
+      --skel-label-bg: rgba(4,8,18,0.75);
+      --hud-bg: rgba(4,8,18,0.88);
+      --hud-act: #fff;
+      --ah-bar-track: #0d1a28;
+      --badge-bg: rgba(4,8,18,0.75);
+      --badge-border: #0d2035;
+      --plabel: #1e3050;
+      --dev-border: #2a1a40;
+      --dev-bg: #0a0818;
+      --dev-fg: #5a3a80;
+      --divider-mid: #0e2540;
+      --preset-btn-bg: var(--surface-2);
+    }
+
+    [data-theme="light"] {
+      color-scheme: light;
+      --bg: #e8edf4;
+      --panel: rgba(255,255,255,0.94);
+      --border: #b4c0d4;
+      --accent: #1565c0;
+      --cyan: #00897b;
+      --text: #1e293b;
+      --muted: #64748b;
+      --surface: #f1f5f9;
+      --surface-2: #e8eef5;
+      --surface-3: #f8fafc;
+      --drawer-bg: rgba(255,255,255,0.98);
+      --drawer-toggle-hover: #e2e8f0;
+      --input-bg: #ffffff;
+      --prog-track: #cbd5e1;
+      --scrollbar-thumb: #94a3b8;
+      --vitals-bg: rgba(255,255,255,0.95);
+      --vitals-label: #64748b;
+      --skel-label-bg: rgba(255,255,255,0.92);
+      --hud-bg: rgba(255,255,255,0.96);
+      --hud-act: #0f172a;
+      --ah-bar-track: #cbd5e1;
+      --badge-bg: rgba(248,250,252,0.98);
+      --badge-border: #cbd5e1;
+      --plabel: #94a3b8;
+      --dev-border: #c4b5fd;
+      --dev-bg: #faf5ff;
+      --dev-fg: #6d28d9;
+      --divider-mid: #b4c0d4;
+      --preset-btn-bg: #e2e8f0;
+    }
+
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      overflow: hidden; display: flex; flex-direction: column;
+      height: 100vh; width: 100vw;
+      transition: background-color 0.22s ease, color 0.22s ease;
+    }
+
+    /* ── TOP BAR ────────────────────────────────── */
+    #topbar {
+      height: 38px; background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 16px; flex-shrink: 0; z-index: 30; gap: 12px;
+    }
+    .brand { font-size: 13px; font-weight: 700; letter-spacing: .07em; color: var(--accent); }
+    .brand span { color: var(--cyan); }
+    .topstats { display: flex; gap: 18px; font-size: 12px; color: var(--muted); }
+    .topstats b { color: var(--accent); }
+    #ws-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    #ws-dot { width: 7px; height: 7px; border-radius: 50%; background: #e85a5a; transition: .3s; }
+    #ws-dot.on { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
+    #top-err { color: #e85a5a; font-size: 11px; }
+
+    /* ── PANELS ─────────────────────────────────── */
+    #panels { display: flex; flex: 1; overflow: hidden; position: relative; }
+    .panel  { position: relative; flex: 1; overflow: hidden; display: flex; transition: flex .3s ease; }
+    .panel canvas { width: 100% !important; height: 100% !important; display: block; }
+    #lp.collapsed { flex: 0 0 0px !important; min-width: 0 !important; max-width: 0 !important; overflow: hidden !important; }
+    #divider {
+      width: 1px; flex-shrink: 0;
+      background: linear-gradient(to bottom, transparent 0%, var(--divider-mid) 10%, var(--accent) 50%, var(--divider-mid) 90%, transparent);
+      transition: width .3s ease, opacity .3s ease;
+    }
+    #divider.collapsed { width: 0 !important; opacity: 0; }
+
+    /* toggle-csi button (topbar) */
+    #toggle-csi {
+      padding: 3px 8px; border-radius: 5px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--muted); font-size: 11px; cursor: pointer;
+      white-space: nowrap; transition: all .15s;
+    }
+    #toggle-csi:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* dev mode toggle */
+    #dev-mode-btn {
+      padding: 3px 9px; border-radius: 5px; font-size: 11px; cursor: pointer;
+      white-space: nowrap; transition: all .2s;
+      border: 1px solid var(--dev-border); background: var(--dev-bg); color: var(--dev-fg);
+    }
+    #dev-mode-btn.on {
+      border-color: #aa44ff; color: #cc88ff;
+      background: rgba(170,68,255,0.12);
+      box-shadow: 0 0 6px rgba(170,68,255,0.3);
+    }
+    [data-theme="light"] #dev-mode-btn.on {
+      border-color: #7c3aed; color: #5b21b6;
+      background: rgba(124,58,237,0.12);
+      box-shadow: 0 0 6px rgba(124,58,237,0.2);
+    }
+
+    /* Трекинг по комнате (режим «В разработке») */
+    #dev-track-panel {
+      position: absolute; top: 10px; left: 10px; z-index: 8; max-width: 220px;
+      padding: 10px 12px; border-radius: 8px;
+      background: var(--drawer-bg); border: 1px solid var(--border);
+      font-size: 11px; color: var(--muted); line-height: 1.45;
+      pointer-events: none; display: none;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    }
+    #dev-track-panel .dt-head {
+      font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--accent); margin-bottom: 8px;
+    }
+    #dev-track-panel .dt-coords { margin: 4px 0; }
+    #dev-track-panel b { color: var(--cyan); font-weight: 600; }
+    #dev-track-panel .dt-muted { font-size: 9px; opacity: 0.85; margin-top: 6px; line-height: 1.35; }
+
+    #dt-limb-block { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+    #dt-limb-block .dt-limb-title { font-size: 9px; font-weight: 600; color: var(--accent); margin-bottom: 6px; letter-spacing: .06em; }
+    .dt-limb-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 9px; }
+    .dt-limb-row span:first-child { flex: 0 0 88px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dt-limb-track { flex: 1; height: 6px; border-radius: 3px; background: rgba(0,0,0,0.25); overflow: hidden; }
+    [data-theme="light"] .dt-limb-track { background: rgba(0,0,0,0.08); }
+    .dt-limb-fill { height: 100%; width: 0%; border-radius: 3px; transition: width .12s ease-out, background .15s; }
+    .dt-limb-fill.c0 { background: linear-gradient(90deg, #5577aa, #88aacc); }
+    .dt-limb-fill.c1 { background: linear-gradient(90deg, #cc6644, #ff9966); }
+    .dt-limb-fill.c2 { background: linear-gradient(90deg, #4488cc, #66bbff); }
+    .dt-limb-fill.c3 { background: linear-gradient(90deg, #cc8844, #ffbb66); }
+    .dt-limb-fill.c4 { background: linear-gradient(90deg, #44aa88, #66ddbb); }
+    .dt-limb-fill.c5 { background: linear-gradient(90deg, #888844, #bbbb88); }
+
+    /* Калибровка конечностей (зарядка) */
+    #limb-calib-section { margin-top: 4px; padding-top: 10px; border-top: 1px dashed var(--border); }
+    #limb-calib-section .limb-guide-link { font-size: 10px; margin-bottom: 8px; }
+    #limb-calib-section .limb-guide-link a { color: var(--cyan); }
+    .limb-step-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .limb-step-nav button { padding: 4px 8px; font-size: 10px; cursor: pointer; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); }
+    .limb-step-nav button:hover { border-color: var(--accent); color: var(--accent); }
+    .limb-step-indicator { font-size: 10px; color: var(--muted); }
+    .limb-instr { font-size: 10px; line-height: 1.45; color: var(--plabel); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 8px; max-height: 120px; overflow-y: auto; }
+    .limb-dur-row { display: flex; align-items: center; gap: 8px; font-size: 10px; margin-bottom: 8px; }
+    .limb-dur-row input { width: 48px; }
+    .limb-calib-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+    .limb-calib-actions button { padding: 6px 10px; font-size: 11px; cursor: pointer; border-radius: 6px; border: 1px solid var(--accent); background: rgba(0,255,200,0.08); color: var(--accent); }
+    .limb-calib-actions button.secondary { border-color: var(--border); background: var(--surface); color: var(--muted); }
+    .limb-calib-actions button.danger { border-color: #e85a5a; color: #ff8080; background: rgba(232,90,90,0.08); }
+    #limb-rec-status { display: none; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid var(--accent); background: rgba(0,255,200,0.06); }
+    #limb-rec-status.show { display: block; }
+    #empty-room-calib-section { margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--border); }
+    #empty-room-status {
+      display: none; margin-bottom: 4px; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid rgba(0,255,200,0.45); background: rgba(0,255,200,0.06);
+    }
+    #empty-room-status.show { display: block; }
+    #empty-room-calib-section #empty-room-start { padding: 7px 12px; font-size: 12px; cursor: pointer; border-radius: 6px; border: 1px solid var(--accent); background: rgba(0,255,200,0.1); color: var(--accent); font-weight: 600; }
+    #empty-room-calib-section #empty-room-start:disabled { opacity: 0.45; cursor: default; }
+    .limb-counts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 9px; color: var(--muted); }
+    .limb-counts-grid span b { color: var(--cyan); }
+
+    /* light / dark theme toggle */
+    #theme-toggle {
+      padding: 3px 9px; border-radius: 5px; font-size: 13px; line-height: 1;
+      cursor: pointer; border: 1px solid var(--border);
+      background: var(--surface); color: var(--muted);
+      transition: border-color .15s, background .15s, color .15s;
+    }
+    #theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+    .plabel {
+      position: absolute; bottom: 10px; left: 0; right: 0; text-align: center;
+      font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+      color: var(--plabel); pointer-events: none; z-index: 5;
+    }
+
+    /* ── TRAINING DRAWER ────────────────────────── */
+    #drawer-toggle {
+      position: absolute; top: 8px; left: 8px; z-index: 40;
+      width: 36px; height: 36px; border-radius: 8px;
+      background: var(--panel); border: 1px solid var(--border);
+      color: var(--accent); font-size: 18px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background .2s;
+    }
+    #drawer-toggle:hover { background: var(--drawer-toggle-hover); }
+    #drawer-toggle.open { color: var(--cyan); border-color: var(--cyan); }
+
+    #drawer {
+      position: absolute; top: 0; left: 0; bottom: 0; z-index: 35;
+      width: 290px;
+      background: var(--drawer-bg);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      transform: translateX(-100%);
+      transition: transform .25s ease;
+      overflow: hidden;
+    }
+    #drawer.open { transform: translateX(0); }
+
+    .d-head {
+      padding: 10px 14px 10px 52px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px; font-weight: 700; letter-spacing: .12em;
+      text-transform: uppercase; color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .d-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; }
+    .d-body::-webkit-scrollbar { width: 4px; }
+    .d-body::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 2px; }
+
+    .d-section-title {
+      font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 6px;
+    }
+
+    /* people counter */
+    .people-row { display: flex; align-items: center; gap: 10px; }
+
+    .height-mode-seg {
+      display: flex; gap: 0; border-radius: 8px; border: 1px solid var(--border);
+      overflow: hidden; margin-top: 6px;
+    }
+    .height-mode-seg button {
+      flex: 1; padding: 6px 8px; font-size: 11px; cursor: pointer;
+      border: none; background: var(--surface-2); color: var(--muted);
+      transition: background .15s, color .15s;
+    }
+    .height-mode-seg button.active {
+      background: rgba(61,158,255,0.2); color: var(--accent); font-weight: 600;
+    }
+    [data-theme="light"] .height-mode-seg button.active {
+      background: rgba(21,101,192,0.12); color: var(--accent);
+    }
+    .height-mode-hint {
+      font-size: 9px; color: var(--muted); margin-top: 5px; line-height: 1.35;
+    }
+    .pcfg-ht-input:disabled { opacity: 0.5; cursor: not-allowed; }
+    .ppl-btn {
+      width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--surface); color: var(--text); font-size: 18px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; line-height: 1;
+      transition: border-color .2s;
+    }
+    .ppl-btn:hover { border-color: var(--accent); }
+    #ppl-val {
+      min-width: 48px; text-align: center; font-size: 22px; font-weight: 700; color: var(--cyan);
+    }
+
+    /* activity buttons */
+    .act-grid { display: flex; flex-direction: column; gap: 5px; }
+    .act-row {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .act-btn {
+      flex: 1; padding: 7px 10px; border-radius: 7px;
+      border: 1px solid var(--border); background: var(--surface-2);
+      color: var(--text); font-size: 12px; cursor: pointer;
+      text-align: left; transition: all .15s;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .act-btn:hover { border-color: var(--accent); background: var(--drawer-toggle-hover); }
+    .act-btn.active { border-color: #e85a5a; background: rgba(232,90,90,0.1); color: #ff8080; }
+    .act-btn.done   { border-color: #00cc88; background: rgba(0,204,136,0.08); }
+    .act-count {
+      width: 36px; text-align: right; font-size: 11px; color: var(--muted);
+      flex-shrink: 0;
+    }
+    .act-count.has { color: var(--cyan); }
+    .act-del {
+      width: 22px; height: 22px; border-radius: 4px; border: 1px solid #1a2535;
+      background: transparent; color: #3a5070; font-size: 12px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: all .15s;
+    }
+    .act-del:hover { border-color: #e85a5a; color: #e85a5a; }
+
+    /* per-person duration input */
+    .pcfg-dur-row { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); margin-top:3px; }
+    .pcfg-dur-input {
+      width:56px; background:var(--input-bg); border:1px solid var(--border);
+      color:var(--text); border-radius:5px; padding:3px 7px; font-size:12px;
+      font-weight:600; outline:none; transition:border-color .15s;
+    }
+    .pcfg-dur-input:focus { border-color:var(--accent); }
+
+    /* per-person calibration grid */
+    .pcfg-cal-grid { display:flex; flex-direction:column; gap:3px; }
+    .pcfg-cal-row  { display:flex; align-items:center; gap:5px; height:24px; }
+    .pcfg-cal-icon { font-size:13px; flex-shrink:0; width:18px; text-align:center; }
+    .pcfg-cal-lbl  { flex:1; font-size:11px; color:var(--muted); }
+    .pcfg-cal-cnt  { min-width:26px; text-align:right; font-size:10px; color:var(--muted); }
+    .pcfg-cal-cnt.has { color:var(--cyan); }
+    .pcfg-cal-rec {
+      width:26px; height:22px; border-radius:4px; border:1px solid #1a2535;
+      background:transparent; font-size:10px; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      transition:all .15s; flex-shrink:0;
+    }
+    .pcfg-cal-rec:hover { border-color: currentColor; background:rgba(255,255,255,0.05); }
+    .pcfg-cal-rec.recording { animation:pulse .8s infinite; }
+
+    /* room calibration */
+    #room-calib-wrap { display:flex; flex-direction:column; gap:5px; }
+    #room-calib-btn {
+      width:100%; padding:8px; border-radius:8px;
+      border:1px solid #2a5040; background:rgba(0,200,120,0.07);
+      color:#00cc88; font-size:12px; font-weight:600; cursor:pointer; transition:all .2s;
+    }
+    #room-calib-btn:hover { background:rgba(0,200,120,0.16); }
+    #room-calib-btn.active { border-color:#e85a5a; background:rgba(232,90,90,0.1); color:#ff8080; animation:pulse .9s infinite; }
+    #room-calib-status { font-size:10px; color:var(--muted); text-align:center; min-height:14px; }
+
+    /* reset button */
+    #reset-btn {
+      flex-shrink:0; padding:9px 11px; border-radius:8px;
+      border:1px solid #3a1515; background:rgba(232,90,90,0.06);
+      color:#e85a5a; font-size:13px; cursor:pointer; transition:all .2s;
+    }
+    #reset-btn:hover { background:rgba(232,90,90,0.16); border-color:#e85a5a; }
+
+    /* global scenario duration */
+    .gdur-row { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); margin-bottom:6px; }
+    .gdur-input {
+      width:52px; background:var(--input-bg); border:1px solid var(--border);
+      color:var(--text); border-radius:5px; padding:2px 6px; font-size:12px;
+      font-weight:600; outline:none; transition:border-color .15s;
+    }
+    .gdur-input:focus { border-color:var(--accent); }
+
+    /* progress */
+    #rec-status {
+      display: none; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid #e85a5a; background: rgba(232,90,90,0.06);
+    }
+    #rec-status.show { display: block; }
+    .rec-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .rec-label { font-size: 12px; color: #ff9090; font-weight: 600; }
+    .rec-time  { font-size: 12px; color: var(--muted); }
+    .prog-bar  { height: 4px; border-radius: 2px; background: var(--prog-track); overflow: hidden; }
+    .prog-fill { height: 100%; background: #e85a5a; border-radius: 2px; transition: width .3s linear; }
+    #stop-btn {
+      margin-top: 6px; width: 100%; padding: 5px; border-radius: 6px;
+      border: 1px solid #e85a5a; background: transparent; color: #ff8080;
+      font-size: 11px; cursor: pointer; transition: background .15s;
+    }
+    #stop-btn:hover { background: rgba(232,90,90,0.15); }
+
+    /* train button */
+    #train-btn {
+      width: 100%; padding: 9px; border-radius: 8px;
+      border: 1px solid var(--accent); background: rgba(61,158,255,0.08);
+      color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer;
+      letter-spacing: .04em; transition: all .2s;
+    }
+    #train-btn:hover:not(:disabled) { background: rgba(61,158,255,0.18); }
+    #train-btn:disabled { opacity: .4; cursor: default; }
+    #train-result {
+      font-size: 11px; text-align: center; color: var(--muted); min-height: 16px;
+    }
+    #train-result.ok  { color: var(--cyan); }
+    #train-result.err { color: #e85a5a; }
+
+    /* ── PER-PERSON CONFIGS ─────────────────────── */
+    #person-configs { display: flex; flex-direction: column; gap: 6px; }
+    .pcfg {
+      border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface-3); padding: 7px 9px;
+      display: flex; flex-direction: column; gap: 5px;
+    }
+    .pcfg-top { display: flex; align-items: center; gap: 6px; }
+    .pcfg-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .pcfg-name {
+      flex: 1; background: transparent; border: none; border-bottom: 1px solid var(--border);
+      color: var(--text); font-size: 12px; font-weight: 600; padding: 1px 4px;
+      outline: none; min-width: 0;
+    }
+    .pcfg-name:focus { border-bottom-color: var(--accent); }
+    .pact-row { display: flex; gap: 4px; flex-wrap: wrap; }
+    .pact-btn {
+      flex: 1; min-width: 0; padding: 4px 2px; border-radius: 5px;
+      border: 1px solid var(--border); background: var(--surface-2);
+      font-size: 13px; cursor: pointer; text-align: center;
+      transition: all .15s; opacity: 0.55;
+    }
+    .pact-btn:hover { opacity: 0.85; border-color: #2a4060; }
+    .pact-btn.sel { opacity: 1; border-color: currentColor; background: rgba(255,255,255,0.06); }
+    [data-theme="light"] .pact-btn { background: var(--surface-2); border-color: var(--border); }
+    [data-theme="light"] .pact-btn.sel { background: rgba(21,101,192,0.12); }
+
+    /* per-person record button */
+    .prec-btn {
+      width: 22px; height: 22px; border-radius: 4px; border: 1px solid #1a2535;
+      background: transparent; color: #e85a5a; font-size: 10px; cursor: pointer;
+      flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+      transition: all .15s;
+    }
+    .prec-btn:hover { border-color: #e85a5a; background: rgba(232,90,90,0.1); }
+    .prec-btn.recording { border-color: #e85a5a; background: rgba(232,90,90,0.15); animation: pulse .8s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .pcfg-prog { height: 2px; border-radius: 1px; background: var(--prog-track); margin-top: 3px; overflow: hidden; display: none; }
+    .pcfg-prog.show { display: block; }
+    .pcfg-prog-fill { height: 100%; background: #e85a5a; border-radius: 1px; transition: width .3s linear; }
+
+    /* Vitals floating panel */
+    .vitals-panel {
+      position: absolute;
+      background: var(--vitals-bg);
+      border: 1px solid rgba(0,255,204,0.25);
+      border-radius: 8px;
+      padding: 6px 9px;
+      font-size: 10px;
+      line-height: 1.7;
+      pointer-events: none;
+      white-space: nowrap;
+      transform: translateY(-50%);
+      display: none;
+      backdrop-filter: blur(4px);
+    }
+    .vitals-panel .vt { color: var(--vitals-label); }
+    .vitals-panel .vv { font-weight: 700; }
+    .vitals-panel .vhb { animation: hbeat .85s infinite; }
+    @keyframes hbeat { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+    /* CSS2D name labels in 3D scene */
+    .skel-label {
+      font-size: 11px; font-weight: 700; letter-spacing: .05em;
+      padding: 2px 8px; border-radius: 20px;
+      background: var(--skel-label-bg);
+      border: 1px solid currentColor;
+      white-space: nowrap; pointer-events: none;
+      text-shadow: 0 0 8px currentColor;
+    }
+    #css2d-container {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; overflow: hidden;
+    }
+
+    /* ── RIGHT PANEL OVERLAY ─────────────────────── */
+    #act-hud {
+      position: absolute; top: 10px; right: 10px; z-index: 20;
+      background: var(--hud-bg); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 12px; min-width: 180px;
+      font-size: 12px; pointer-events: none;
+    }
+    .ah-title { font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+    .ah-ppl { font-size: 26px; font-weight: 700; color: var(--cyan); line-height: 1; }
+    .ah-ppl-lbl { font-size: 10px; color: var(--muted); margin-bottom: 8px; }
+    .ah-act-label { font-size: 14px; font-weight: 600; color: var(--hud-act); margin-bottom: 8px; }
+    .ah-dual-hint { font-size: 11px; opacity: 0.88; color: var(--muted, #8a9); margin: -4px 0 8px; line-height: 1.3; }
+    .ah-bars { display: flex; flex-direction: column; gap: 4px; }
+    .ah-bar-row { display: flex; align-items: center; gap: 6px; }
+    .ah-bar-name { width: 70px; font-size: 10px; color: var(--muted); text-align: right; flex-shrink: 0; }
+    .ah-bar-track { flex: 1; height: 4px; background: var(--ah-bar-track); border-radius: 2px; overflow: hidden; }
+    .ah-bar-fill  { height: 100%; border-radius: 2px; transition: width .4s ease; }
+    .ah-bar-pct   { width: 32px; font-size: 10px; color: var(--muted); flex-shrink: 0; }
+    .ah-na { color: var(--muted); font-size: 11px; font-style: italic; }
+    #ah-limb-match { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 10px; color: var(--muted); line-height: 1.45; }
+    #ah-limb-match.show { display: block; }
+    .ah-limb-mt { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+
+    /* bar colors per class */
+    .bar-empty    { background: #253545; }
+    .bar-sleeping { background: #5577aa; }
+    .bar-sitting  { background: #44aacc; }
+    .bar-standing { background: #44cc88; }
+    .bar-walking  { background: #ffaa44; }
+    [data-theme="light"] .bar-empty    { background: #94a3b8; }
+    [data-theme="light"] .bar-sleeping { background: #64748b; }
+    [data-theme="light"] .bar-sitting  { background: #0ea5e9; }
+    [data-theme="light"] .bar-standing { background: #059669; }
+    [data-theme="light"] .bar-walking  { background: #d97706; }
+
+    /* right panel labels */
+    #rp-badges {
+      position: absolute; bottom: 30px; right: 10px; z-index: 6;
+      display: flex; gap: 5px; pointer-events: none;
+    }
+    .badge {
+      background: var(--badge-bg); border: 1px solid var(--badge-border);
+      border-radius: 5px; padding: 3px 8px; font-size: 10px; color: var(--muted);
+    }
+    .badge b { color: var(--cyan); }
+    .skel-react-row { margin-top: 6px; }
+    .skel-react-row input[type="range"] {
+      width: 100%; accent-color: var(--accent, #6ae);
+      height: 8px; background: transparent;
+    }
+    .skel-react-row input[type="range"]::-webkit-slider-runnable-track {
+      height: 6px; border-radius: 3px; background: var(--prog-track);
+    }
+    .skel-react-row input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 16px; height: 16px; margin-top: -5px; border-radius: 50%;
+      background: var(--accent); border: 2px solid var(--panel);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .skel-react-row input[type="range"]::-moz-range-track {
+      height: 6px; border-radius: 3px; background: var(--prog-track);
+    }
+    .skel-react-row input[type="range"]::-moz-range-thumb {
+      width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--panel);
+      background: var(--accent);
+    }
+    .skel-react-labels {
+      display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 2px;
+    }
+    .skel-react-presets { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .skel-react-presets button {
+      font-size: 10px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--preset-btn-bg); color: var(--text); cursor: pointer;
+    }
+    .skel-react-presets button:hover { border-color: var(--accent, #6ae); }
+  </style>
+</head>
+<body>
+
+<div id="topbar">
+  <div class="brand">⬡ RUVIEW &nbsp;<span>WiFi DensePose</span></div>
+  <div class="topstats">
+    <span>RSSI: <b id="rssi">—</b> dBm</span>
+    <span>TS: <b id="ts">—</b></span>
+    <button id="toggle-csi" title="Скрыть/показать CSI-столбцы">⬛ CSI</button>
+    <button id="csi-heatmap-mode" type="button" title="Амплитуды: как в потоке (нормировка на max). Δ: приращение кадр-к-кадру — лучше видно движение, не «размер» шума">CSI | ампл</button>
+    <button id="dev-mode-btn" title="Трекинг по комнате, движение по конечностям (дельта модели), след, обход, CSI">⚗ В разработке</button>
+    <button id="theme-toggle" type="button" title="Светлая тема" aria-label="Переключить тему оформления">☀️</button>
+    <span id="top-err"></span>
+  </div>
+  <div id="ws-row">
+    <div id="ws-dot"></div>
+    <span id="st">подключение…</span>
+  </div>
+</div>
+
+<div id="panels">
+
+  <!-- LEFT: CSI bars + training drawer -->
+  <div class="panel" id="lp">
+
+    <!-- toggle button (always visible) -->
+    <button id="drawer-toggle" title="Обучение модели">⚙</button>
+
+    <!-- collapsible training drawer -->
+    <div id="drawer">
+      <div class="d-head">Обучение модели</div>
+      <div class="d-body">
+
+        <!-- people count -->
+        <div>
+          <div class="d-section-title">Людей в комнате</div>
+          <div class="people-row">
+            <button class="ppl-btn" id="ppl-minus">−</button>
+            <div id="ppl-val">1</div>
+            <button class="ppl-btn" id="ppl-plus">+</button>
+          </div>
+        </div>
+
+        <div>
+          <div class="d-section-title">Рост (показ «Жизненные показатели»)</div>
+          <div class="height-mode-seg">
+            <button type="button" id="height-mode-auto">Авто</button>
+            <button type="button" id="height-mode-manual">Вручную</button>
+          </div>
+          <div class="height-mode-hint">Авто — оценка по выходу позовой модели (один поток CSI). Вручную — значение из карточки участника.</div>
+        </div>
+
+        <div>
+          <div class="d-section-title">Реактивность скелета</div>
+          <div class="height-mode-hint" style="margin-bottom:6px">Сглаживание выхода модели: вправо — ближе к сырым 32 числам (меньше «резиновости»). «Сыро» — почти без двойного EMA.</div>
+          <div class="skel-react-row">
+            <input type="range" id="skel-react-slider" min="0" max="100" value="38" title="0 = плавно, 100 = максимально отзывчиво" />
+            <div class="skel-react-labels">
+              <span>плавно</span>
+              <b id="skel-react-val">38</b>
+              <span>сыро</span>
+            </div>
+          </div>
+          <div class="skel-react-presets">
+            <button type="button" class="skel-preset" data-skel="8">Очень плавно</button>
+            <button type="button" class="skel-preset" data-skel="38">По умолчанию</button>
+            <button type="button" class="skel-preset" data-skel="52">Отзывчиво</button>
+            <button type="button" class="skel-preset" data-skel="78">Сыро</button>
+          </div>
+          <div class="d-section-title" style="margin-top:10px">Прямой трекинг CSI</div>
+          <div class="height-mode-hint" style="margin-bottom:6px">По умолчанию влево — только ровный манекен по классу активности. Вправо — подмешивается «сырая» поза из 32 выходов (до порога геометрии); это живее, но часто кривит силуэт. Рост «Авто» — к карточке. <span id="map3d-build-tag" style="opacity:0.55;font-size:10px"></span></div>
+          <div class="skel-react-row">
+            <input type="range" id="pose-csi-track-slider" min="0" max="100" value="0" title="0 = только шаблон по активности, 100 = максимум позы из CSI" />
+            <div class="skel-react-labels">
+              <span>манекен</span>
+              <b id="pose-csi-track-val">0</b>
+              <span>CSI</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- per-person configs -->
+        <div>
+          <div class="d-section-title">Участники</div>
+          <div id="person-configs"></div>
+        </div>
+
+        <div id="limb-calib-section">
+          <div class="d-section-title">Калибровка конечностей</div>
+          <div class="height-mode-hint" style="margin-bottom:8px">См. ползунок «Прямой трекинг CSI» выше: вправо поза строится из 32 выходов модели; влево — манекен и поправка. Если сидите, а фигура «стоит», проверьте калибровку и модель <code>model-q4.bin</code>, кнопки «Отображение» и обучение активности.</div>
+          <div class="limb-guide-link">Как проходить: <a href="calibration_guide.html" target="_blank" rel="noopener">краткий гайд</a> · <a href="camera_calib.html" target="_blank" rel="noopener">калибровка с камерой</a></div>
+          <div class="limb-step-nav">
+            <button type="button" id="limb-step-prev" title="Предыдущая зона">◀</button>
+            <span class="limb-step-indicator" id="limb-step-label">Шаг 1 / 6</span>
+            <button type="button" id="limb-step-next" title="Следующая зона">▶</button>
+          </div>
+          <div class="limb-instr" id="limb-instr"></div>
+          <div class="limb-dur-row">
+            Длительность шага: <input type="number" class="gdur-input" id="limb-dur-input" value="20" min="5" max="120" /> с
+          </div>
+          <div class="limb-calib-actions">
+            <button type="button" id="limb-rec-start">● Записать эту зону</button>
+            <button type="button" class="secondary" id="limb-rec-stop">⏹ Стоп</button>
+            <button type="button" id="limb-train-net" title="Линейная модель по всем записанным зонам (≥24 сэмпла, ≥2 зоны)">▶ Обучить модель зон</button>
+            <button type="button" class="danger" id="limb-clear-zone" title="Очистить только текущую зону">🗑 зона</button>
+            <button type="button" class="secondary" id="limb-clear-all" title="Сбросить все зоны">🗑 все</button>
+          </div>
+          <div id="limb-train-result" class="height-mode-hint" style="min-height:14px;margin-top:4px"></div>
+          <div id="limb-rec-status">
+            <div class="rec-top">
+              <div class="rec-label" id="limb-rec-label-txt">Запись…</div>
+              <div class="rec-time"><span id="limb-rec-remain">—</span> с</div>
+            </div>
+            <div class="prog-bar"><div class="prog-fill" id="limb-prog-fill" style="width:100%"></div></div>
+          </div>
+          <div class="limb-counts-grid" id="limb-counts-grid"></div>
+        </div>
+
+        <div id="empty-room-calib-section">
+          <div class="d-section-title">Калибровка пустой комнаты</div>
+          <div class="height-mode-hint" style="margin-bottom:8px">Эталон CSI без людей (класс «Пусто»). Сначала отсчёт — успейте выйти и закрыть дверь.</div>
+          <div class="gdur-row" style="margin-bottom:6px;flex-wrap:wrap;gap:6px">
+            <span>Пауза: <input type="number" class="gdur-input" id="empty-room-delay-input" value="15" min="3" max="120" title="Секунд до начала записи" /> с</span>
+            <span>Запись: <input type="number" class="gdur-input" id="empty-room-dur-input" value="10" min="3" max="60" /> с</span>
+          </div>
+          <div class="limb-calib-actions" style="margin-bottom:6px">
+            <button type="button" id="empty-room-start">▶ Записать пустую комнату</button>
+            <button type="button" class="secondary" id="empty-room-cancel" style="display:none">Отмена</button>
+          </div>
+          <div id="empty-room-status">
+            <div class="rec-top">
+              <div class="rec-label" id="empty-room-label-txt" style="color:var(--accent)"></div>
+              <div class="rec-time" id="empty-room-remain-wrap"><span id="empty-room-remain">—</span></div>
+            </div>
+            <div class="prog-bar"><div class="prog-fill" id="empty-room-prog-fill" style="width:100%"></div></div>
+            <button type="button" id="empty-room-stop" style="display:none;margin-top:6px;width:100%;padding:5px;border-radius:6px;border:1px solid #e85a5a;background:transparent;color:#ff8080;font-size:11px;cursor:pointer">⏹ Остановить запись</button>
+          </div>
+        </div>
+
+        <!-- room calibration (shown only in dev mode) -->
+        <div id="room-calib-wrap" style="display:none">
+          <div class="gdur-row" style="margin-bottom:4px">
+            Площадь квартиры:
+            <input type="number" class="gdur-input" id="sqm-input" value="40" min="5" max="500" />
+            м²
+          </div>
+          <button id="room-calib-btn">📐 Обход комнаты</button>
+          <div id="room-calib-status">Нажмите и обойдите периметр квартиры</div>
+        </div>
+
+        <!-- Запись классов «пусто / спят / сидят / стоят / ходят» + обучение линейного классификатора -->
+        <div id="activity-calib-section" style="display:none" aria-hidden="true">
+        <!-- global scenarios (Пусто + common) -->
+        <div>
+          <div class="d-section-title">Общий сценарий</div>
+          <div class="gdur-row">
+            Длительность: <input type="number" class="gdur-input" id="gdur-input" value="10" min="1" />с
+          </div>
+          <div class="act-grid" id="act-grid">
+            <!-- filled by JS -->
+          </div>
+        </div>
+
+        <!-- recording progress -->
+        <div id="rec-status">
+          <div class="rec-top">
+            <div class="rec-label" id="rec-label-txt">Запись…</div>
+            <div class="rec-time"><span id="rec-remain">—</span>с</div>
+          </div>
+          <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:100%"></div></div>
+          <button id="stop-btn">⏹ Остановить</button>
+        </div>
+
+        <!-- train + reset -->
+        <div style="display:flex;gap:6px;align-items:stretch">
+          <button id="train-btn" style="flex:1">▶ Обучить</button>
+          <button id="reset-btn" title="Сбросить все данные калибровки">🗑</button>
+        </div>
+        <div id="train-result"></div>
+        </div><!-- /activity-calib-section -->
+
+      </div><!-- d-body -->
+    </div><!-- drawer -->
+
+    <div class="plabel" id="csi-plabel">CSI · 8×8 = 64 поднесущих (формат ESP). Не «разрешение экрана» — см. кнопку CSI | ампл / Δ</div>
+  </div>
+
+  <div id="divider"></div>
+
+  <!-- RIGHT: skeleton room + activity HUD -->
+  <div class="panel" id="rp">
+
+    <div id="act-hud">
+      <div class="ah-title">Анализ активности</div>
+      <div id="ah-content">
+        <div class="ah-na">Модель не обучена.<br>Используйте панель ⚙</div>
+      </div>
+      <div id="ah-limb-match" aria-live="polite"></div>
+    </div>
+
+    <div id="dev-track-panel">
+      <div class="dt-head">Трекинг по комнате</div>
+      <div id="dt-body">
+        <div>Зона: <b id="dt-zone">—</b></div>
+        <div class="dt-coords">X: <b id="dt-x">—</b> м &nbsp; Z: <b id="dt-z">—</b> м</div>
+        <div>Скорость: <b id="dt-v">—</b> <span class="dt-muted">(оценка по тазу)</span></div>
+        <div>Карта CSI: <b id="dt-csi">—</b></div>
+        <div class="dt-muted">Грубая оценка по выходу модели и позиции скелета в сцене, не дальномер.</div>
+        <div id="dt-limb-block">
+          <div class="dt-limb-title">Движение по конечностям <span class="dt-muted">(дельта 2D-позы модели)</span></div>
+          <div class="dt-limb-row"><span id="dt-limb-lbl-0">Голова</span><div class="dt-limb-track"><div class="dt-limb-fill c0" id="dt-limb-fill-0"></div></div></div>
+          <div class="dt-limb-row"><span id="dt-limb-lbl-1">Правая рука</span><div class="dt-limb-track"><div class="dt-limb-fill c1" id="dt-limb-fill-1"></div></div></div>
+          <div class="dt-limb-row"><span id="dt-limb-lbl-2">Левая рука</span><div class="dt-limb-track"><div class="dt-limb-fill c2" id="dt-limb-fill-2"></div></div></div>
+          <div class="dt-limb-row"><span id="dt-limb-lbl-3">Правая нога</span><div class="dt-limb-track"><div class="dt-limb-fill c3" id="dt-limb-fill-3"></div></div></div>
+          <div class="dt-limb-row"><span id="dt-limb-lbl-4">Левая нога</span><div class="dt-limb-track"><div class="dt-limb-fill c4" id="dt-limb-fill-4"></div></div></div>
+          <div class="dt-limb-row"><span id="dt-limb-lbl-5">Торс/таз</span><div class="dt-limb-track"><div class="dt-limb-fill c5" id="dt-limb-fill-5"></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="rp-badges">
+      <div class="badge">Keypoints <b>16</b></div>
+      <div class="badge">Model <b>q4·2048w</b></div>
+    </div>
+
+    <div class="plabel">Human Pose Estimation · Live Inference</div>
+  </div>
+
+</div><!-- panels -->
+
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/"
+  }
+}
+</script>
+
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer }  from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }      from 'three/addons/postprocessing/RenderPass.js';
+import { OrbitControls }   from 'three/addons/controls/OrbitControls.js';
+
+// ─────────────────────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────────────────────
+    function _wsHost() {
+      const h = (location.hostname || '').toLowerCase();
+      if (h === '0.0.0.0' || h === '[::]' || h === '::') return '127.0.0.1';
+      return location.hostname || '127.0.0.1';
+    }
+    const WS_URL = 'ws://' + _wsHost() + ':8765/';
+    const N      = 64;
+
+/** Панель сценариев в ⚙: запись классов и обучение для демо. */
+const SHOW_ACTIVITY_CALIB = true;
+/** true: только шаблон по «Отображение», без смеси с выходом позовой модели (для статичного слайда). Обычно false. */
+const DEMO_TEMPLATE_SKELETON = false;
+
+const ACTIVITIES = [
+  { key: 'empty',    ru: '🏠 Пусто',       icon: '🏠' },
+  { key: 'sleeping', ru: '🌙 Все спят',     icon: '🌙' },
+  { key: 'sitting',  ru: '🪑 Все сидят',    icon: '🪑' },
+  { key: 'standing', ru: '🧍 Все стоят',    icon: '🧍' },
+  { key: 'walking',  ru: '🚶 Все ходят',    icon: '🚶' },
+];
+const BAR_COLORS = {
+  empty:'#253545', sleeping:'#5577aa', sitting:'#44aacc', standing:'#44cc88', walking:'#ffaa44'
+};
+
+const BONES = [
+  [0,1],[1,2],[2,3],[3,4],
+  [1,5],[5,6],[6,7],
+  [1,14],[14,15],
+  [15,8],[8,9],[9,10],
+  [15,11],[11,12],[12,13]
+];
+
+// ── Мульти-скелет ────────────────────────────────────────────
+const MAX_PPL = 8;
+
+// Цвета скелетов (по одному на человека)
+const PPL_COLORS = [0x00ffcc,0x4488ff,0x88ee44,0xff8844,0xaa44ff,0xff4488,0xffee44,0x44ffee];
+
+// Позиции в комнате для N людей [x, z]
+const SLOT_LAYOUTS = [
+  [],
+  [[0, 0]],
+  [[-2.5, 0],  [2.5, 0]],
+  [[-2.5,-1.5],[2.5,-1.5],[0, 2.0]],
+  [[-2.5,-1.5],[2.5,-1.5],[-2.5,1.5],[2.5,1.5]],
+  [[-2.5,-1.5],[2.5,-1.5],[-2.5,1.5],[2.5,1.5],[0, 0]],
+  [[-3.0,-1.5],[0,-2.0],[3.0,-1.5],[-3.0,1.5],[0,2.0],[3.0,1.5]],
+  [[-3.0,-1.5],[0,-2.0],[3.0,-1.5],[-3.0,1.5],[0,2.0],[3.0,1.5],[0,0]],
+  [[-3.5,-1.8],[-1.2,-2.2],[1.2,-2.2],[3.5,-1.8],[-3.5,1.8],[-1.2,2.2],[1.2,2.2],[3.5,1.8]],
+];
+
+// Состояние каждого скелета
+const skelTargets = Array.from({length:MAX_PPL}, () =>
+  Array.from({length:16}, () => new THREE.Vector3(0,1,0)));
+const skelCurrs   = Array.from({length:MAX_PPL}, () =>
+  Array.from({length:16}, () => new THREE.Vector3(0,1,0)));
+// Сглаженные дельты (м) от шаблона: 32 = 16×(x,y) из модели — не абсолютные координаты сцены
+const _skelModelDeltaSmoothed = Array.from({length: MAX_PPL}, () =>
+  Array.from({length: 16}, () => new THREE.Vector3(0, 0, 0)));
+/** Доля старого «остатка» поверх манекена (когда прямой трекинг CSI выключен или мал). */
+const MODEL_RESIDUAL_STRENGTH = 0.74;
+/** false: не добавлять dres в сцену — остаток 2D→псевдо-3D давал «точка + лучи» на части GPU. Включайте только для отладки. */
+const MODEL_DRES_IN_SCENE = false;
+/** 0…100: доля позы из прямого разложения 32 выходов (см. getPoseCsiTrack). По умолчанию 0 — ровный шаблон по активности. */
+let _poseCsiTrackPct = 0;
+/** v2: сброс старых сохранённых ~86% «прямого CSI», из‑за которых скелет кривило. */
+const POSE_CSI_TRACK_STORAGE = 'ruview-pose-csi-track-v2';
+function getPoseCsiTrack() {
+  return Math.max(0, Math.min(1, _poseCsiTrackPct / 100));
+}
+
+let activePeople    = 0;
+let currentActivity = null;
+/** EMA весов sleeping/sitting/standing для плавного шаблона (без «двух поз» при дрожании argmax). */
+let _pwSleep = 0, _pwSit = 0, _pwStand = 1;
+const POSE_TEMPLATE_BLEND_EMA = 0.22;
+
+// Данные о каждом человеке (имя + активность + длительность записи)
+const DEFAULT_NAMES = ['Алиса','Боб','Вася','Даша','Егор','Женя','Зина','Иван'];
+const persons = Array.from({length: MAX_PPL}, (_, i) => ({
+  name:     DEFAULT_NAMES[i] || `Человек ${i+1}`,
+  activity: 'standing',
+  duration: 10,
+  height:   175,   // рост в см
+}));
+
+// Мировые позиции, «домашняя» точка и направление движения
+const personWorldPos = Array.from({length: MAX_PPL}, (_, i) => ({
+  x: 0, z: 0,          // текущая позиция
+  hx: 0, hz: 0,        // "домашняя" точка (обновляется из slot при смене числа людей)
+  dir: (i / MAX_PPL) * Math.PI * 2,
+  nextDirChange: Date.now() + 2000 + i * 600,
+}));
+let _lastRoomMap = null; // последние scores карты комнаты
+
+// ── Шаблоны поз (16 точек × [x, y, z]) ─────────────────────────
+// Индексы: 0=голова 1=шея 2=п_плечо 3=п_локоть 4=п_кисть
+//          5=л_плечо 6=л_локоть 7=л_кисть
+//          8=п_бедро 9=п_колено 10=п_ступня
+//          11=л_бедро 12=л_колено 13=л_ступня
+//          14=позвоночник 15=таз
+const P = {
+  standing: [
+    [ 0.00, 2.70, 0.00], // 0 голова
+    [ 0.00, 2.30, 0.00], // 1 шея
+    [ 0.55, 2.10, 0.00], // 2 п_плечо
+    [ 0.80, 1.60, 0.06], // 3 п_локоть
+    [ 0.70, 1.10, 0.06], // 4 п_кисть
+    [-0.55, 2.10, 0.00], // 5 л_плечо
+    [-0.80, 1.60, 0.06], // 6 л_локоть
+    [-0.70, 1.10, 0.06], // 7 л_кисть
+    [ 0.26, 1.42, 0.00], // 8 п_бедро
+    [ 0.28, 0.76, 0.00], // 9 п_колено
+    [ 0.28, 0.06, 0.00], // 10 п_ступня
+    [-0.26, 1.42, 0.00], // 11 л_бедро
+    [-0.28, 0.76, 0.00], // 12 л_колено
+    [-0.28, 0.06, 0.00], // 13 л_ступня
+    [ 0.00, 1.82, 0.00], // 14 позвоночник
+    [ 0.00, 1.42, 0.00], // 15 таз
+  ],
+  sitting: [
+    [ 0.00, 2.25,-0.05], // голова
+    [ 0.00, 1.88,-0.03], // шея
+    [ 0.52, 1.72, 0.00], // п_плечо
+    [ 0.65, 1.28, 0.18], // п_локоть (рука на колене)
+    [ 0.58, 0.95, 0.38], // п_кисть
+    [-0.52, 1.72, 0.00], // л_плечо
+    [-0.65, 1.28, 0.18], // л_локоть
+    [-0.58, 0.95, 0.38], // л_кисть
+    [ 0.23, 1.08, 0.00], // п_бедро
+    [ 0.23, 1.02, 0.58], // п_колено (вперёд)
+    [ 0.23, 0.06, 0.58], // п_ступня
+    [-0.23, 1.08, 0.00], // л_бедро
+    [-0.23, 1.02, 0.58], // л_колено
+    [-0.23, 0.06, 0.58], // л_ступня
+    [ 0.00, 1.48,-0.04], // позвоночник
+    [ 0.00, 1.08, 0.00], // таз
+  ],
+  sleeping: [
+    [ 0.88, 0.13, 0.00], // голова
+    [ 0.68, 0.13, 0.00], // шея
+    [ 0.52, 0.13, 0.28], // п_плечо
+    [ 0.30, 0.13, 0.38], // п_локоть
+    [ 0.08, 0.13, 0.38], // п_кисть
+    [ 0.52, 0.13,-0.28], // л_плечо
+    [ 0.30, 0.13,-0.38], // л_локоть
+    [ 0.08, 0.13,-0.38], // л_кисть
+    [ 0.00, 0.13, 0.26], // п_бедро
+    [-0.38, 0.13, 0.26], // п_колено
+    [-0.72, 0.13, 0.26], // п_ступня
+    [ 0.00, 0.13,-0.26], // л_бедро
+    [-0.38, 0.13,-0.26], // л_колено
+    [-0.72, 0.13,-0.26], // л_ступня
+    [ 0.32, 0.13, 0.00], // позвоночник
+    [ 0.00, 0.13, 0.00], // таз
+  ],
+  // Ходьба: два кадра, между которыми анимируем по синусоиде
+  walkA: [
+    [ 0.00, 2.65, 0.00],
+    [ 0.00, 2.25, 0.00],
+    [ 0.55, 2.05, 0.00],
+    [ 0.72, 1.55,-0.22], // п_локоть назад
+    [ 0.62, 1.05,-0.32], // п_кисть назад
+    [-0.55, 2.05, 0.00],
+    [-0.72, 1.55, 0.22], // л_локоть вперёд
+    [-0.62, 1.05, 0.32], // л_кисть вперёд
+    [ 0.22, 1.38, 0.00],
+    [ 0.30, 0.80, 0.38], // п_колено вперёд
+    [ 0.28, 0.06, 0.44], // п_ступня вперёд
+    [-0.22, 1.38, 0.00],
+    [-0.28, 0.68,-0.22], // л_колено назад
+    [-0.25, 0.06,-0.28], // л_ступня назад
+    [ 0.00, 1.78, 0.00],
+    [ 0.00, 1.38, 0.00],
+  ],
+  walkB: [
+    [ 0.00, 2.65, 0.00],
+    [ 0.00, 2.25, 0.00],
+    [ 0.55, 2.05, 0.00],
+    [ 0.72, 1.55, 0.22], // п_локоть вперёд
+    [ 0.62, 1.05, 0.32],
+    [-0.55, 2.05, 0.00],
+    [-0.72, 1.55,-0.22], // л_локоть назад
+    [-0.62, 1.05,-0.32],
+    [ 0.22, 1.38, 0.00],
+    [ 0.28, 0.68,-0.22], // п_колено назад
+    [ 0.25, 0.06,-0.28],
+    [-0.22, 1.38, 0.00],
+    [-0.30, 0.80, 0.38], // л_колено вперёд
+    [-0.28, 0.06, 0.44],
+    [ 0.00, 1.78, 0.00],
+    [ 0.00, 1.38, 0.00],
+  ],
+};
+
+
+// ═══════════════════════════════════════════════════════════════
+// LEFT PANEL — CSI Bars
+// ═══════════════════════════════════════════════════════════════
+const lpEl = document.getElementById('lp');
+const lpR  = new THREE.WebGLRenderer({ antialias: true });
+lpR.setPixelRatio(Math.min(devicePixelRatio, 2));
+lpR.setClearColor(0x04060e);
+lpR.domElement.style.cssText = 'display:block;position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;';
+lpEl.appendChild(lpR.domElement);
+lpR.setSize(lpEl.clientWidth, lpEl.clientHeight);
+
+const lpScene  = new THREE.Scene();
+lpScene.fog    = new THREE.FogExp2(0x04060e, 0.04);
+const lpCamera = new THREE.PerspectiveCamera(50, lpEl.clientWidth / lpEl.clientHeight, 0.1, 120);
+lpCamera.position.set(7, 5.5, 7);
+
+const lpAmbient = new THREE.AmbientLight(0x1a2d50, 0.7);
+lpScene.add(lpAmbient);
+const lpKey = new THREE.PointLight(0x4db2ff, 2, 30);
+lpKey.position.set(2, 10, 2);
+lpScene.add(lpKey);
+let lpGrid = new THREE.GridHelper(9, 8, 0x112840, 0x0a1820);
+lpScene.add(lpGrid);
+
+const lpDummy = new THREE.Object3D();
+const lpGeom  = new THREE.BoxGeometry(0.44, 1, 0.44);
+const lpMat   = new THREE.MeshStandardMaterial({
+  color: 0x1565cc, metalness: 0.25, roughness: 0.5,
+  emissive: 0x082244, emissiveIntensity: 0.6,
+});
+const lpInst  = new THREE.InstancedMesh(lpGeom, lpMat, N);
+lpInst.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(N * 3), 3);
+
+const _lpC = new THREE.Color();
+    for (let i = 0; i < N; i++) {
+  lpDummy.position.set((i % 8) - 3.5, 0.025, Math.floor(i / 8) - 3.5);
+  lpDummy.scale.set(1, 0.05, 1);
+  lpDummy.updateMatrix();
+  lpInst.setMatrixAt(i, lpDummy.matrix);
+  lpInst.setColorAt(i, _lpC.set(0x1565cc));
+}
+lpInst.instanceMatrix.needsUpdate = true;
+lpInst.instanceColor.needsUpdate  = true;
+lpScene.add(lpInst);
+
+/** Режим «ампл»: нормировка на max в кадре → визуально «все столбцы высокие» при ровном профиле — не баг SNR. Режим «Δ»: |h−h_prev| по сырому кадру — акцент на изменении (движение). */
+let _csiHeatmapMode = 'amp';
+let _prevRawForDelta = null;
+
+function _finite01(x) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(1, Math.max(0, v));
+}
+
+function updateCSI(heightsVis, heightsRawOpt) {
+  if (!heightsVis || heightsVis.length < N) return;
+  let display = heightsVis;
+  const raw = heightsRawOpt || heightsVis;
+  if (_csiHeatmapMode === 'delta') {
+    if (!_prevRawForDelta) {
+      display = new Array(N).fill(0);
+    } else {
+      display = new Array(N);
+      for (let i = 0; i < N; i++) {
+        display[i] = Math.abs(_finite01(raw[i]) - _finite01(_prevRawForDelta[i]));
+      }
+    }
+    _prevRawForDelta = raw.slice(0, N);
+  } else {
+    _prevRawForDelta = null;
+  }
+  let mx = 1e-6;
+  for (let i = 0; i < N; i++) mx = Math.max(mx, display[i]);
+  for (let i = 0; i < N; i++) {
+    const t = display[i] / mx;
+    const h = 0.04 + t * 3.2;
+    lpDummy.position.set((i % 8) - 3.5, h / 2, Math.floor(i / 8) - 3.5);
+    lpDummy.scale.set(1, h, 1);
+    lpDummy.updateMatrix();
+    lpInst.setMatrixAt(i, lpDummy.matrix);
+    _lpC.setHSL(0.58 - t * 0.12, 0.85, 0.15 + t * 0.45);
+    lpInst.setColorAt(i, _lpC);
+  }
+  lpInst.instanceMatrix.needsUpdate = true;
+  lpInst.instanceColor.needsUpdate  = true;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// RIGHT PANEL — Skeleton Room
+// ═══════════════════════════════════════════════════════════════
+const rpEl = document.getElementById('rp');
+const rpR  = new THREE.WebGLRenderer({ antialias: true });
+rpR.setPixelRatio(Math.min(devicePixelRatio, 2));
+rpR.setClearColor(0x020407);
+rpR.toneMapping         = THREE.ReinhardToneMapping;
+rpR.toneMappingExposure = 1.4;
+rpR.domElement.style.cssText = 'display:block;position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;';
+rpEl.appendChild(rpR.domElement);
+rpR.setSize(rpEl.clientWidth, rpEl.clientHeight);
+
+const rpScene  = new THREE.Scene();
+const rpCamera = new THREE.PerspectiveCamera(55, rpEl.clientWidth / rpEl.clientHeight, 0.1, 120);
+rpCamera.position.set(0, 5, 10);
+
+const rpAmbient = new THREE.AmbientLight(0x020612, 1);
+rpScene.add(rpAmbient);
+const rpFill = new THREE.PointLight(0x0a1a44, 1.5, 40);
+rpFill.position.set(0, 10, 0);
+rpScene.add(rpFill);
+const rpGlow = new THREE.PointLight(0x88aacc, 0.85, 12);
+rpGlow.position.set(0, 1.5, 0);
+rpScene.add(rpGlow);
+
+// Floor
+const flr = new THREE.Mesh(
+  new THREE.PlaneGeometry(24, 24),
+  new THREE.MeshStandardMaterial({ color: 0x030710, metalness: 0.85, roughness: 0.2 })
+);
+flr.rotation.x = -Math.PI / 2;
+rpScene.add(flr);
+let rpGrid = new THREE.GridHelper(22, 44, 0x0a2040, 0x051020);
+rpScene.add(rpGrid);
+
+// Walls (transparent wireframe style)
+function addWall(w, h, px, py, pz, ry) {
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshStandardMaterial({ color: 0x040c20, side: THREE.DoubleSide, transparent: true, opacity: 0.18, wireframe: false })
+  );
+  m.position.set(px, py, pz); m.rotation.y = ry;
+  rpScene.add(m);
+  // Wireframe border
+  const wf = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.PlaneGeometry(w, h)),
+    new THREE.LineBasicMaterial({ color: 0x0a2040, transparent: true, opacity: 0.4 })
+  );
+  wf.position.set(px, py, pz); wf.rotation.y = ry;
+  rpScene.add(wf);
+}
+addWall(22, 8, 0, 4, -11, 0);
+addWall(22, 8, -11, 4, 0, Math.PI / 2);
+addWall(22, 8,  11, 4, 0, Math.PI / 2);
+// Ceiling outline
+const ceilEdges = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.PlaneGeometry(22, 22)),
+  new THREE.LineBasicMaterial({ color: 0x081828, transparent: true, opacity: 0.25 })
+);
+ceilEdges.rotation.x = -Math.PI / 2; ceilEdges.position.y = 7.5;
+rpScene.add(ceilEdges);
+
+// WiFi sphere (large rotating wireframe) — signature visual
+const wifiSphere = new THREE.Mesh(
+  new THREE.SphereGeometry(9, 24, 16),
+  new THREE.MeshBasicMaterial({ color: 0x003366, wireframe: true, transparent: true, opacity: 0.09 })
+);
+rpScene.add(wifiSphere);
+
+// Floor WiFi rings (concentric, pulsing)
+const wifiRings = [];
+for (let r = 1; r <= 6; r++) {
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(r * 1.6, r * 1.6 + 0.04, 64),
+    new THREE.MeshBasicMaterial({ color: 0x004488, transparent: true, opacity: 0.08 / r, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.003;
+  rpScene.add(ring);
+  wifiRings.push(ring);
+}
+
+// Simple furniture silhouettes (give room scale)
+function addBox(w, h, d, x, y, z) {
+  const b = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.0, roughness: 0.95, emissiveIntensity: 0 })
+  );
+  b.position.set(x, y, z); rpScene.add(b);
+  const wf = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d)),
+    new THREE.LineBasicMaterial({ color: 0xaabbcc, transparent: true, opacity: 0.6 })
+  );
+  wf.position.set(x, y, z); rpScene.add(wf);
+}
+// (furniture removed — adds confusion)
+
+// ── Occupancy grid — карта комнаты, открывается по мере ходьбы ──
+const GRID_N    = 26;           // 26×26 клеток
+const GRID_STEP = 0.95;         // шаг (м)
+const GRID_HALF = (GRID_N / 2 - 0.5) * GRID_STEP;
+const G_TOTAL   = GRID_N * GRID_N;
+
+const occ       = new Uint8Array(G_TOTAL).fill(0);   // 0=неизв 1=пол 2=стена
+const occScore  = new Float32Array(G_TOTAL).fill(0); // wall score накопленный
+
+const tileDummy = new THREE.Object3D();
+const tileGeom  = new THREE.BoxGeometry(GRID_STEP * 0.88, 1, GRID_STEP * 0.88);
+const tileMat   = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.1, roughness: 0.5, emissive: new THREE.Color(0,0,0), emissiveIntensity: 0.4 });
+const tileMesh  = new THREE.InstancedMesh(tileGeom, tileMat, G_TOTAL);
+tileMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(G_TOTAL * 3), 3);
+const _hideTile = new THREE.Matrix4().makeScale(0,0,0);
+for (let i = 0; i < G_TOTAL; i++) tileMesh.setMatrixAt(i, _hideTile);
+tileMesh.instanceMatrix.needsUpdate = true;
+tileMesh.visible = false;  // скрыт пока не включён devMode
+rpScene.add(tileMesh);
+
+const _tc = new THREE.Color();
+function _renderTile(idx, gx, gz) {
+  const wx  = -GRID_HALF + gx * GRID_STEP;
+  const wz  = -GRID_HALF + gz * GRID_STEP;
+  const ws  = occScore[idx];
+  const isW = occ[idx] === 2;
+  const h   = isW ? 0.15 + ws * 1.8 : 0.04;
+  tileDummy.position.set(wx, h / 2, wz);
+  tileDummy.scale.set(1, h, 1);
+  tileDummy.updateMatrix();
+  tileMesh.setMatrixAt(idx, tileDummy.matrix);
+  if (isW) _tc.setRGB(0.05 + ws*0.1, 0.3 + ws*0.4, 0.9);
+  else      _tc.setRGB(0.0, 0.08, 0.22);
+  tileMesh.setColorAt(idx, _tc);
+}
+
+function updateOccGrid(wx, wz, wallScores) {
+  const cx = Math.round((wx + GRID_HALF) / GRID_STEP);
+  const cz = Math.round((wz + GRID_HALF) / GRID_STEP);
+  let dirty = false;
+  // Открываем пол в радиусе 2 клетки вокруг скелета
+  for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) {
+    const ix = cx + dx, iz = cz + dz;
+    if (ix < 0 || ix >= GRID_N || iz < 0 || iz >= GRID_N) continue;
+    const id = iz * GRID_N + ix;
+    if (occ[id] === 0) { occ[id] = 1; _renderTile(id, ix, iz); dirty = true; }
+  }
+  // Детектируем стены из room_map scores
+  if (wallScores) {
+    for (let si = 0; si < 64; si++) {
+      if (wallScores[si] < 0.55) continue;
+      const ang  = (si % 8) / 8 * Math.PI * 2;
+      const dist = Math.floor(si / 8) + 2;
+      const wix  = Math.round(cx + Math.sin(ang) * dist);
+      const wiz  = Math.round(cz + Math.cos(ang) * dist);
+      if (wix < 0 || wix >= GRID_N || wiz < 0 || wiz >= GRID_N) continue;
+      const wid = wiz * GRID_N + wix;
+      const sc  = wallScores[si];
+      occScore[wid] = Math.min(1, occScore[wid] * 0.9 + sc * 0.1);
+      if (occScore[wid] > 0.45 && occ[wid] !== 2) { occ[wid] = 2; }
+      _renderTile(wid, wix, wiz); dirty = true;
+    }
+  }
+  if (dirty) {
+    tileMesh.instanceMatrix.needsUpdate = true;
+    tileMesh.instanceColor.needsUpdate  = true;
+  }
+}
+
+// ── Room Calibration — обход периметра ───────────────────────
+let   devMode       = false;  // ⚗ режим «В разработке» (движение + карта комнаты)
+let   roomCalibMode = false;
+const TRAIL_MAX     = 3000;         // макс точек трейла
+const _trailBuf     = new Float32Array(TRAIL_MAX * 3);
+let   _trailCount   = 0;
+let   _trailLX      = Infinity, _trailLZ = Infinity;
+const _calibVisited = new Set();    // "gx,gz" строки посещённых клеток
+
+const trailGeom = new THREE.BufferGeometry();
+trailGeom.setAttribute('position', new THREE.BufferAttribute(_trailBuf, 3));
+trailGeom.setDrawRange(0, 0);
+const trailLine = new THREE.Line(
+  trailGeom,
+  new THREE.LineBasicMaterial({ color: 0x00ffcc, linewidth: 2 })
+);
+trailLine.visible = false;
+rpScene.add(trailLine);
+
+// ── След перемещения (оранжевый) — режим «В разработке», не калибровка ──
+const TRACK_TRAIL_MAX = 2000;
+const _trackTrailBuf = new Float32Array(TRACK_TRAIL_MAX * 3);
+let   _trackTrailCount = 0;
+let   _trackSegLX = Infinity, _trackSegLZ = Infinity;
+const trackTrailGeom = new THREE.BufferGeometry();
+trackTrailGeom.setAttribute('position', new THREE.BufferAttribute(_trackTrailBuf, 3));
+trackTrailGeom.setDrawRange(0, 0);
+const trackTrailLine = new THREE.Line(
+  trackTrailGeom,
+  new THREE.LineBasicMaterial({ color: 0xff8844 })
+);
+trackTrailLine.visible = false;
+rpScene.add(trackTrailLine);
+
+let _trackPrevT = 0;
+let _trackPrevX = 0, _trackPrevZ = 0;
+let _trackVelEma = 0;
+
+/** 3×3 условных сектора по плоскости XZ (метры), центр сцены ≈ (0,0). */
+function zoneLabelFromXZ(x, z) {
+  const t = 3.5;
+  const ix = x < -t ? 0 : x > t ? 2 : 1;
+  const iz = z < -t ? 0 : z > t ? 2 : 1;
+  const S = [
+    ['ЮЗ', 'Ю', 'ЮВ'],
+    ['З',  'Ц', 'В' ],
+    ['СЗ', 'С', 'СВ'],
+  ];
+  return S[iz][ix];
+}
+
+function _addTrackTrailPt(x, z) {
+  const ddx = x - _trackSegLX, ddz = z - _trackSegLZ;
+  if (ddx * ddx + ddz * ddz < 0.004) return;
+  _trackSegLX = x;
+  _trackSegLZ = z;
+  if (_trackTrailCount >= TRACK_TRAIL_MAX) {
+    const keep = Math.floor(TRACK_TRAIL_MAX / 2);
+    for (let i = 0; i < keep; i++) {
+      _trackTrailBuf[i * 3]     = _trackTrailBuf[(i * 2) * 3];
+      _trackTrailBuf[i * 3 + 1] = _trackTrailBuf[(i * 2) * 3 + 1];
+      _trackTrailBuf[i * 3 + 2] = _trackTrailBuf[(i * 2) * 3 + 2];
+    }
+    _trackTrailCount = keep;
+  }
+  _trackTrailBuf[_trackTrailCount * 3]     = x;
+  _trackTrailBuf[_trackTrailCount * 3 + 1] = 0.08;
+  _trackTrailBuf[_trackTrailCount * 3 + 2] = z;
+  _trackTrailCount++;
+  trackTrailGeom.setDrawRange(0, _trackTrailCount);
+  trackTrailGeom.attributes.position.needsUpdate = true;
+}
+
+function resetMovementTrack() {
+  _trackTrailCount = 0;
+  _trackSegLX = Infinity;
+  _trackSegLZ = Infinity;
+  trackTrailGeom.setDrawRange(0, 0);
+  _trackPrevT = 0;
+  _trackVelEma = 0;
+  trackTrailLine.visible = false;
+}
+
+function updateDevTrackingPanel() {
+  const panel = document.getElementById('dev-track-panel');
+  if (!panel) return;
+  panel.style.display = devMode ? 'block' : 'none';
+  if (!devMode) {
+    updateLimbMotionUI();
+    return;
+  }
+
+  const elZ = document.getElementById('dt-zone');
+  const elX = document.getElementById('dt-x');
+  const elZc = document.getElementById('dt-z');
+  const elV = document.getElementById('dt-v');
+  const elCsi = document.getElementById('dt-csi');
+
+  if (roomCalibMode) {
+    elZ.textContent = 'Обход периметра…';
+    elX.textContent = '—';
+    elZc.textContent = '—';
+    elV.textContent = '—';
+    elCsi.textContent = 'пауза';
+    trackTrailLine.visible = false;
+    updateLimbMotionUI();
+    return;
+  }
+
+  if (activePeople < 1) {
+    elZ.textContent = 'нет человека';
+    elX.textContent = '—';
+    elZc.textContent = '—';
+    elV.textContent = '—';
+    elCsi.textContent = _lastRoomMap ? '8×8 (ожидание)' : '—';
+    trackTrailLine.visible = false;
+    updateLimbMotionUI();
+    return;
+  }
+
+  const px = skelCurrs[0][15].x;
+  const pz = skelCurrs[0][15].z;
+  elZ.textContent = zoneLabelFromXZ(px, pz);
+  elX.textContent = px.toFixed(2);
+  elZc.textContent = pz.toFixed(2);
+
+  const now = performance.now();
+  if (_trackPrevT > 0) {
+    const dt = (now - _trackPrevT) / 1000;
+    if (dt > 0.008) {
+      const dist = Math.hypot(px - _trackPrevX, pz - _trackPrevZ);
+      const v = dist / dt;
+      _trackVelEma = _trackVelEma * 0.82 + v * 0.18;
+    }
+  }
+  _trackPrevT = now;
+  _trackPrevX = px;
+  _trackPrevZ = pz;
+  elV.textContent = _trackVelEma.toFixed(2);
+
+  elCsi.textContent = _lastRoomMap ? '8×8 обновл.' : 'ожидание';
+
+  trackTrailLine.visible = true;
+  _addTrackTrailPt(px, pz);
+  updateLimbMotionUI();
+}
+
+function _addTrailPt(x, z) {
+  if (!roomCalibMode) return;
+  const ddx = x - _trailLX, ddz = z - _trailLZ;
+  if (ddx*ddx + ddz*ddz < 0.03) return;  // не добавляем если сдвиг < 0.17 ед.
+  _trailLX = x; _trailLZ = z;
+  if (_trailCount >= TRAIL_MAX) {
+    // Децимируем: оставляем каждую вторую точку
+    const keep = Math.floor(TRAIL_MAX / 2);
+    for (let i = 0; i < keep; i++) {
+      _trailBuf[i*3]   = _trailBuf[(i*2)*3];
+      _trailBuf[i*3+1] = _trailBuf[(i*2)*3+1];
+      _trailBuf[i*3+2] = _trailBuf[(i*2)*3+2];
+    }
+    _trailCount = keep;
+  }
+  _trailBuf[_trailCount*3]   = x;
+  _trailBuf[_trailCount*3+1] = 0.1;
+  _trailBuf[_trailCount*3+2] = z;
+  _trailCount++;
+  trailGeom.setDrawRange(0, _trailCount);
+  trailGeom.attributes.position.needsUpdate = true;
+  // Отмечаем клетки сетки
+  const gx = Math.round((x + GRID_HALF) / GRID_STEP);
+  const gz = Math.round((z + GRID_HALF) / GRID_STEP);
+  for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) {
+    const ix = gx+dx, iz = gz+dz;
+    if (ix >= 0 && ix < GRID_N && iz >= 0 && iz < GRID_N) _calibVisited.add(`${ix},${iz}`);
+  }
+}
+
+function startRoomCalib() {
+  roomCalibMode = true;
+  _trailCount   = 0;
+  _trailLX      = Infinity; _trailLZ = Infinity;
+  _calibVisited.clear();
+  trailLine.visible = true;
+  trailGeom.setDrawRange(0, 0);
+  // Сброс сетки
+  occ.fill(0); occScore.fill(0);
+  for (let i = 0; i < G_TOTAL; i++) tileMesh.setMatrixAt(i, _hideTile);
+  tileMesh.instanceMatrix.needsUpdate = true;
+  console.log('🏠 Обход комнаты начат');
+}
+
+function finishRoomCalib() {
+  roomCalibMode = false;
+  trailLine.visible = false;
+
+  if (_calibVisited.size < 10) { console.warn('Мало данных — обойдите комнату'); return; }
+
+  // Строим «блокировочную» маску: посещённые клетки + буфер 1 клетка
+  const blocker = new Uint8Array(G_TOTAL).fill(0);
+  for (const key of _calibVisited) {
+    const [gx, gz] = key.split(',').map(Number);
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      const ix = gx+dx, iz = gz+dz;
+      if (ix >= 0 && ix < GRID_N && iz >= 0 && iz < GRID_N) blocker[iz*GRID_N+ix] = 1;
+    }
+  }
+
+  // Flood fill с краёв сетки: всё достижимое НЕ через блокер = снаружи (стены)
+  const outside = new Uint8Array(G_TOTAL).fill(0);
+  const q = [];
+  for (let i = 0; i < GRID_N; i++) {
+    q.push([i, 0],[i, GRID_N-1],[0, i],[GRID_N-1, i]);
+  }
+  while (q.length) {
+    const [gx, gz] = q.pop();
+    if (gx < 0 || gx >= GRID_N || gz < 0 || gz >= GRID_N) continue;
+    const id = gz*GRID_N+gx;
+    if (outside[id] || blocker[id]) continue;
+    outside[id] = 1;
+    q.push([gx+1,gz],[gx-1,gz],[gx,gz+1],[gx,gz-1]);
+  }
+
+  // Применяем: снаружи = стены, внутри = пол
+  for (let gz = 0; gz < GRID_N; gz++) {
+    for (let gx = 0; gx < GRID_N; gx++) {
+      const id = gz*GRID_N+gx;
+      if (outside[id]) { occ[id] = 2; occScore[id] = 0.88; }
+      else              { occ[id] = 1; occScore[id] = 0.0;  }
+      _renderTile(id, gx, gz);
+    }
+  }
+  tileMesh.instanceMatrix.needsUpdate = true;
+  tileMesh.instanceColor.needsUpdate  = true;
+  console.log(`🏠 Обход завершён. Клеток пути: ${_calibVisited.size}`);
+}
+
+// ── Скелеты: одна LineSegments + N×16 инстансов на суставы ──
+const rpDummy = new THREE.Object3D();
+
+// Кости: отдельный меш на каждого человека (разный цвет)
+const boneMeshes = PPL_COLORS.map(col => {
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(BONES.length * 6), 3));
+  const mesh = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: col, linewidth: 1 }));
+  mesh.visible = false;
+  rpScene.add(mesh);
+  return mesh;
+});
+
+// Суставы: один инстансный меш, MAX_PPL×16 шаров, с цветом per-instance
+const jGeom     = new THREE.SphereGeometry(0.09, 14, 12);
+const jMat      = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  roughness: 0.42,
+  metalness: 0.18,
+  emissive: 0x000000,
+  emissiveIntensity: 0,
+});
+const jointMesh = new THREE.InstancedMesh(jGeom, jMat, MAX_PPL * 16);
+jointMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PPL * 16 * 3), 3);
+const _hiddenM = new THREE.Matrix4().makeScale(0,0,0);
+for (let i = 0; i < MAX_PPL * 16; i++) jointMesh.setMatrixAt(i, _hiddenM);
+jointMesh.instanceMatrix.needsUpdate = true;
+rpScene.add(jointMesh);
+
+// OrbitControls
+const rpControls = new OrbitControls(rpCamera, rpR.domElement);
+rpControls.enableDamping  = true;
+rpControls.dampingFactor  = 0.06;
+rpControls.minDistance    = 2;
+rpControls.maxDistance    = 26;
+rpControls.target.set(0, 1.2, 0);
+rpControls.update();
+
+// Без bloom — иначе суставы сливаются в «каплю света», позу не разобрать
+const composer = new EffectComposer(rpR);
+composer.addPass(new RenderPass(rpScene, rpCamera));
+
+/** Синхронизация WebGL-сцены с темой (тёмная / светлая) */
+function applyTheme3D(light) {
+  function swapGrid(oldG, parent, factory) {
+    parent.remove(oldG);
+    oldG.dispose();
+    const g = factory();
+    parent.add(g);
+    return g;
+  }
+  if (light) {
+    lpR.setClearColor(0xe8edf4);
+    lpScene.fog.color.setHex(0xe8edf4);
+    lpScene.fog.density = 0.018;
+    lpAmbient.color.setHex(0xc5d0e8);
+    lpAmbient.intensity = 0.95;
+    lpKey.color.setHex(0x4488dd);
+    lpKey.intensity = 1.6;
+    lpGrid = swapGrid(lpGrid, lpScene, () => new THREE.GridHelper(9, 8, 0x8899bb, 0xb8c5d8));
+
+    rpR.setClearColor(0xdce4ef);
+    rpR.toneMappingExposure = 1.15;
+    rpAmbient.color.setHex(0xc8d4e8);
+    rpAmbient.intensity = 1.05;
+    rpFill.color.setHex(0xaabbcc);
+    rpFill.intensity = 1.35;
+    rpGlow.color.setHex(0x6688aa);
+    rpGlow.intensity = 0.55;
+    flr.material.color.setHex(0xc5d0dd);
+    flr.material.metalness = 0.35;
+    flr.material.roughness = 0.45;
+    rpGrid = swapGrid(rpGrid, rpScene, () => new THREE.GridHelper(22, 44, 0x8899bb, 0xb0c0d8));
+    wifiSphere.material.color.setHex(0x4488aa);
+    wifiSphere.material.opacity = 0.06;
+    wifiRings.forEach((ring, i) => {
+      ring.material.color.setHex(0x5599bb);
+      ring.material.opacity = 0.05 / (i + 1);
+    });
+  } else {
+    lpR.setClearColor(0x04060e);
+    lpScene.fog.color.setHex(0x04060e);
+    lpScene.fog.density = 0.04;
+    lpAmbient.color.setHex(0x1a2d50);
+    lpAmbient.intensity = 0.7;
+    lpKey.color.setHex(0x4db2ff);
+    lpKey.intensity = 2;
+    lpGrid = swapGrid(lpGrid, lpScene, () => new THREE.GridHelper(9, 8, 0x112840, 0x0a1820));
+
+    rpR.setClearColor(0x020407);
+    rpR.toneMappingExposure = 1.4;
+    rpAmbient.color.setHex(0x020612);
+    rpAmbient.intensity = 1;
+    rpFill.color.setHex(0x0a1a44);
+    rpFill.intensity = 1.5;
+    rpGlow.color.setHex(0x6699cc);
+    rpGlow.intensity = 0.75;
+    flr.material.color.setHex(0x030710);
+    flr.material.metalness = 0.85;
+    flr.material.roughness = 0.2;
+    rpGrid = swapGrid(rpGrid, rpScene, () => new THREE.GridHelper(22, 44, 0x0a2040, 0x051020));
+    wifiSphere.material.color.setHex(0x003366);
+    wifiSphere.material.opacity = 0.09;
+    wifiRings.forEach((ring, i) => {
+      ring.material.color.setHex(0x004488);
+      ring.material.opacity = 0.08 / (i + 1);
+    });
+  }
+}
+
+// ── Room-map heatmap (64 points on floor) ────────────────────
+const rmPtGeom  = new THREE.BufferGeometry();
+const rmPtPos   = new Float32Array(64 * 3);
+const rmPtColor = new Float32Array(64 * 3);
+for (let i = 0; i < 64; i++) {
+  const gx = (i % 8) - 3.5,  gz = Math.floor(i / 8) - 3.5;
+  rmPtPos[i*3]   = gx * 2.4;
+  rmPtPos[i*3+1] = 0.04;
+  rmPtPos[i*3+2] = gz * 2.4;
+  rmPtColor[i*3] = rmPtColor[i*3+1] = rmPtColor[i*3+2] = 0;
+}
+rmPtGeom.setAttribute('position', new THREE.BufferAttribute(rmPtPos, 3));
+rmPtGeom.setAttribute('color',    new THREE.BufferAttribute(rmPtColor, 3));
+const rmPtMesh = new THREE.Points(
+  rmPtGeom,
+  new THREE.PointsMaterial({ size: 0.55, vertexColors: true, transparent: true, opacity: 0.7 })
+);
+rpScene.add(rmPtMesh);
+
+// Контейнер для лейблов создаём динамически ПОСЛЕ канваса (правильный z-порядок)
+const labelContainer = document.createElement('div');
+labelContainer.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:hidden;z-index:5;';
+rpEl.appendChild(labelContainer);
+
+// Лейблы имён + витальные панели
+const nameLabels   = [];
+const vitalsPanels = [];
+PPL_COLORS.forEach((col, p) => {
+  const hexStr = '#' + col.toString(16).padStart(6, '0');
+
+  // Имя
+  const nDiv = document.createElement('div');
+  nDiv.className  = 'skel-label';
+  nDiv.style.color = hexStr;
+  nDiv.style.cssText += ';position:absolute;transform:translate(-50%,-100%);display:none;';
+  nDiv.textContent = persons[p].name;
+  labelContainer.appendChild(nDiv);
+  nameLabels.push({ div: nDiv });
+
+  // Витальные показатели
+  const vDiv = document.createElement('div');
+  vDiv.className = 'vitals-panel';
+  vDiv.style.borderColor = hexStr + '55';
+  vDiv.innerHTML = `
+    <div><span class="vt">♡ Пульс  </span><span class="vv vhb" id="vhr-${p}" style="color:${hexStr}">—</span> <span class="vt">bpm</span></div>
+    <div><span class="vt">☼ Дыхание</span><span class="vv" id="vrr-${p}" style="color:${hexStr}">—</span> <span class="vt">rpm</span></div>
+    <div><span class="vt">↕ Рост   </span><span class="vv" id="vht-${p}" style="color:${hexStr}">—</span> <span class="vt">см</span></div>`;
+  labelContainer.appendChild(vDiv);
+  vitalsPanels.push({ div: vDiv });
+});
+
+// Общие витальные данные (обновляются из пакета)
+let _lastVitals = { heart_rate: 0, respiration: 0 };
+
+/** Рост: авто (оценка с бэкенда / скелет) или вручную (поле в карточке) */
+let _lastHeightEst = 175;
+let heightModeAuto = true;
+try { heightModeAuto = localStorage.getItem('ruview-height-mode') !== 'manual'; } catch (_) {}
+
+function estimateHeightFromSkeleton(sk) {
+  if (!sk || sk.length < 32) return _lastHeightEst;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < 16; i++) {
+    const y = sk[i * 2 + 1];
+    lo = Math.min(lo, y); hi = Math.max(hi, y);
+  }
+  const span = Math.max(hi - lo, 1e-6);
+  const t = Math.min(1, Math.max(0, (span - 0.08) / 2.5));
+  let cm = Math.round(145 + t * 65);
+  const cardH = typeof persons[0]?.height === 'number' ? persons[0].height : 0;
+  const cap = cardH > 120 ? Math.min(198, cardH + 18) : 198;
+  const floor = cardH > 120 ? Math.max(148, cardH - 35) : 148;
+  cm = Math.min(cap, Math.max(floor, cm));
+  return cm;
+}
+
+function syncHeightModeUI() {
+  const a = document.getElementById('height-mode-auto');
+  const m = document.getElementById('height-mode-manual');
+  if (a && m) {
+    a.classList.toggle('active', heightModeAuto);
+    m.classList.toggle('active', !heightModeAuto);
+  }
+  document.querySelectorAll('.pcfg-ht-input').forEach(el => { el.disabled = heightModeAuto; });
+  try { localStorage.setItem('ruview-height-mode', heightModeAuto ? 'auto' : 'manual'); } catch (_) {}
+}
+
+// Вспомогательный вектор для проекции
+const _projV = new THREE.Vector3();
+
+// ── EMA tracking для per-joint реактивности ───────────────────
+// EMA выхода нейросети: «быстрый» и «медленный» — дельта = смесь, иначе медленный жест
+// (рука вверх) почти целиком уходит в EMA и скелет не двигается.
+const skelEMA     = new Float32Array(32).fill(0);
+const skelSlowEMA = new Float32Array(32).fill(0);
+let   _emaReady = false;
+let   _motionE  = 0;     // текущая энергия движения (0..1)
+
+/** Группы суставов 2D-позы (индексы 0…15): отдельная оценка «движения» по конечности */
+const LIMB_DEFS = [
+  { joints: [0, 1], ru: 'Голова/шея' },
+  { joints: [2, 3, 4], ru: 'Правая рука' },
+  { joints: [5, 6, 7], ru: 'Левая рука' },
+  { joints: [8, 9, 10], ru: 'Правая нога' },
+  { joints: [11, 12, 13], ru: 'Левая нога' },
+  { joints: [14, 15], ru: 'Торс/таз' },
+];
+const JOINT_TO_LIMB = [0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5];
+const LIMB_PALETTE = [0xffcc88, 0xff8866, 0x66ccff, 0xffaa44, 0x44ccaa, 0xcccc88];
+const _limbMotionSmoothed = new Float32Array(6);
+
+/** Нормированная (0…1) относительная активность каждой группы по дельте выхода модели */
+function _computeLimbMotionLevels(delta) {
+  if (!delta || delta.length < 32) return null;
+  const raw = [];
+  for (let g = 0; g < LIMB_DEFS.length; g++) {
+    const joints = LIMB_DEFS[g].joints;
+    let s = 0;
+    for (const j of joints) {
+      const dx = delta[2 * j];
+      const dy = delta[2 * j + 1];
+      s += dx * dx + dy * dy;
+    }
+    raw.push(Math.sqrt(s / joints.length));
+  }
+  const mx = Math.max(...raw, 1e-6);
+  return raw.map((v) => v / mx);
+}
+
+function updateLimbMotionUI() {
+  if (!devMode) {
+    for (let i = 0; i < 6; i++) {
+      const f = document.getElementById(`dt-limb-fill-${i}`);
+      const l = document.getElementById(`dt-limb-lbl-${i}`);
+      if (f) f.style.width = '0%';
+      if (l) l.textContent = LIMB_DEFS[i].ru;
+    }
+    return;
+  }
+  for (let i = 0; i < 6; i++) {
+    const f = document.getElementById(`dt-limb-fill-${i}`);
+    const l = document.getElementById(`dt-limb-lbl-${i}`);
+    const show = activePeople >= 1 && !roomCalibMode;
+    const n = show ? _limbMotionSmoothed[i] : 0;
+    if (f) f.style.width = `${Math.min(100, Math.round(n * 100))}%`;
+    if (l) l.textContent = show ? `${LIMB_DEFS[i].ru} · ${(n * 100).toFixed(0)}%` : LIMB_DEFS[i].ru;
+  }
+}
+
+// Обновляем EMA и возвращаем нормированную дельту (смесь быстрой/медленной — видны и плавные жесты)
+function _updateEMA(sk) {
+  if (!sk || sk.length < 32) return null;
+  const jp = getSkelJointEmaParams();
+  const alphaFast = _emaReady ? jp.fast : 0.5;
+  const alphaSlow = jp.slow;
+  const wSlow = jp.wSlow;
+  const delta = new Float32Array(32);
+  let maxAbs = 1e-6;
+  for (let i = 0; i < 32; i++) {
+    if (!_emaReady) {
+      skelEMA[i] = sk[i];
+      skelSlowEMA[i] = sk[i];
+    } else {
+      skelEMA[i] = skelEMA[i] * (1 - alphaFast) + sk[i] * alphaFast;
+      skelSlowEMA[i] = skelSlowEMA[i] * (1 - alphaSlow) + sk[i] * alphaSlow;
+    }
+    const dh = sk[i] - skelEMA[i];
+    const ds = sk[i] - skelSlowEMA[i];
+    const mix = (1 - wSlow) * dh + wSlow * ds;
+    delta[i] = mix;
+    maxAbs = Math.max(maxAbs, Math.abs(mix));
+  }
+  _emaReady = true;
+  return delta.map((v) => v / maxAbs);
+}
+
+// ── Room-map heatmap update ───────────────────────────────────
+function updateRoomMap(scores) {
+  const col = rmPtGeom.attributes.color.array;
+  const maxS = Math.max(...scores, 1e-6);
+  for (let i = 0; i < 64; i++) {
+    const s    = scores[i] / maxS;
+    col[i*3]   = s * 0.1;
+    col[i*3+1] = s * 0.5;
+    col[i*3+2] = s * 1.0;
+  }
+  rmPtGeom.attributes.color.needsUpdate = true;
+}
+
+// Старая функция (fallback для случая без модели)
+function _skelNoise(sk) {
+  if (!sk || sk.length < 32) return null;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < 32; i++) { lo = Math.min(lo, sk[i]); hi = Math.max(hi, sk[i]); }
+  const span = Math.max(hi - lo, 1e-6);
+  return sk.map(v => (v - lo) / span * 2 - 1);
+}
+
+// Чувствительность каждого сустава к дельте CSI
+// 0=голова 1=шея 2=п_плечо 3=п_локоть 4=п_кисть 5=л_плечо 6=л_локоть 7=л_кисть
+// 8=п_бедро 9=п_колено 10=п_ступня 11=л_бедро 12=л_колено 13=л_ступня 14=позвоночник 15=таз
+const JOINT_SENS = [0.16,0.11, 0.28,0.42,0.55, 0.28,0.42,0.55, 0.22,0.36,0.42, 0.22,0.36,0.42, 0.10,0.08];
+// Соответствие сустава 0…15 ключу зоны калибровки на сервере (LIMB_KEYS) — не путать с JOINT_TO_LIMB (индексы 0…5)
+const JOINT_TO_CALIB_LIMB = ['head','head','r_arm','r_arm','r_arm','l_arm','l_arm','l_arm','r_leg','r_leg','r_leg','l_leg','l_leg','l_leg','torso','torso'];
+const LIMB_CALIB_KEYS = ['head', 'r_arm', 'l_arm', 'r_leg', 'l_leg', 'torso'];
+
+function _maxLimbScore(limbScores) {
+  if (!limbScores || typeof limbScores !== 'object') return 0;
+  let m = 0;
+  for (let i = 0; i < LIMB_CALIB_KEYS.length; i++) {
+    const v = limbScores[LIMB_CALIB_KEYS[i]];
+    if (typeof v === 'number') m = Math.max(m, v);
+  }
+  return m;
+}
+
+/** Сглаживание вероятностей зон (нейросеть или центроиды) — стабильнее трекинг */
+const _limbProbSmoothed = {};
+function smoothLimbMatchScores(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const a = 0.2;
+  for (let i = 0; i < LIMB_CALIB_KEYS.length; i++) {
+    const k = LIMB_CALIB_KEYS[i];
+    const v = typeof raw[k] === 'number' ? raw[k] : 0;
+    _limbProbSmoothed[k] = (_limbProbSmoothed[k] ?? 0) * (1 - a) + v * a;
+  }
+  return { ..._limbProbSmoothed };
+}
+
+/**
+ * Раньше сюда подмешивали «delta» по осям 32-D модели — это не смещения суставов в 3D, из‑за индексации
+ * (ki→di) получались точка + длинные «лучи». Оставлено пустым; движение даёт _setPose / остаток dres.
+ */
+function _applyDelta(_delta, _p, _motionE, _limbScores) {}
+
+// ── State machine — sliding-window голосование ────────────────
+const personPactRows = []; // refs для обновления кнопок без ре-рендера
+
+// История предсказаний за последние VOTE_MS мс
+const VOTE_MS    = 1500;   // окно голосования
+const VOTE_MIN   = 0.50;   // порог победы (50%)
+const _votes     = [];     // [{label, time}]
+let   _winner    = null;   // текущая активная поза
+
+function _applyMLActivity(activity) {
+  if (!activity || activity.label === 'empty' || activePeople === 0) return;
+
+  const now   = Date.now();
+  const label = activity.label;
+
+  // Добавляем голос, удаляем старые
+  _votes.push({ label, time: now });
+  let cut = 0;
+  while (cut < _votes.length && _votes[cut].time < now - VOTE_MS) cut++;
+  if (cut) _votes.splice(0, cut);
+
+  // Подсчёт голосов
+  const cnt = {};
+  _votes.forEach(v => { cnt[v.label] = (cnt[v.label] || 0) + 1; });
+  const total  = _votes.length;
+  const sorted = Object.entries(cnt).sort((a, b) => b[1] - a[1]);
+  const top    = sorted[0][0];
+  const frac   = sorted[0][1] / total;
+
+  // Обновляем только ОДНОГО человека по очереди (round-robin)
+  if (top !== _winner && frac >= VOTE_MIN) {
+    _winner = top;
+    // Назначаем изменённую активность следующему по очереди человеку
+    if (activePeople > 0) {
+      _rr = (_rr + 1) % activePeople;
+      persons[_rr].activity = top;
+      const row = personPactRows[_rr];
+      if (row) row.querySelectorAll('.pact-btn').forEach(b => b.classList.toggle('sel', b.title === top));
+    }
+  }
+}
+let _rr = 0; // round-robin index
+
+/** Только шаблон (стоит/сидит/…): если в пакете нет skeleton или он короче 32 — иначе все суставы остаются в (0,1,0) = «ком + лучи». */
+function _fillSkelTargetsTemplate(p, label) {
+  if (label === 'walking') {
+    const wp = personWorldPos[p];
+    for (let ki = 0; ki < 16; ki++) {
+      skelTargets[p][ki].set(P.walkA[ki][0] + wp.x, P.walkA[ki][1], P.walkA[ki][2] + wp.z);
+    }
+    return;
+  }
+  let pose = null;
+  if (getPoseCsiTrack() > 0.08) pose = _getBlendedPoseTemplates(currentActivity);
+  if (!pose) {
+    pose = label === 'sleeping' ? P.sleeping
+      : label === 'sitting' ? P.sitting
+      : P.standing;
+  }
+  const wp = personWorldPos[p];
+  for (let ki = 0; ki < 16; ki++) {
+    skelTargets[p][ki].set(
+      pose[ki][0] + wp.x,
+      pose[ki][1],
+      pose[ki][2] + wp.z,
+    );
+  }
+}
+
+function updateSkelTargets(sk, activity, limbScores) {
+  currentActivity = activity;
+
+  const nRaw = activity ? activity.n_people : nPeople;
+  const n    = Math.min(Math.max(0, nRaw), MAX_PPL);
+
+  if ((activity && activity.label === 'empty') || n === 0) {
+    activePeople = 0; return;
+  }
+
+  const skOk = sk && sk.length >= 32;
+
+  if (!activity) {
+    if (!skOk) {
+      activePeople = Math.max(1, nPeople);
+      _initWorldPositions(activePeople);
+      for (let p = 0; p < activePeople; p++) {
+        _fillSkelTargetsTemplate(p, persons[p].activity);
+      }
+      return;
+    }
+    const noise = _skelNoise(sk);
+    const delta = _updateEMA(sk);
+    if (delta) {
+      const lm = _computeLimbMotionLevels(delta);
+      if (lm) {
+        for (let i = 0; i < 6; i++) {
+          _limbMotionSmoothed[i] = _limbMotionSmoothed[i] * 0.74 + lm[i] * 0.26;
+        }
+      }
+    }
+    if (!noise) return;
+    activePeople = Math.max(1, nPeople);
+    _initWorldPositions(activePeople);
+    for (let p = 0; p < activePeople; p++) {
+      _setPose(p, persons[p].activity, noise, limbScores, sk);
+      _applyDelta(delta, p, _motionE, limbScores);
+    }
+    return;
+  }
+
+  _applyMLActivity(activity);
+
+  const prevN = activePeople;
+  activePeople = n;
+  if (n !== prevN) _initWorldPositions(n);
+
+  if (!skOk) {
+    for (let p = 0; p < n; p++) {
+      _fillSkelTargetsTemplate(p, persons[p].activity);
+    }
+    return;
+  }
+
+  const noise = _skelNoise(sk);
+  const delta = _updateEMA(sk);
+  if (delta) {
+    const lm = _computeLimbMotionLevels(delta);
+    if (lm) {
+      for (let i = 0; i < 6; i++) {
+        _limbMotionSmoothed[i] = _limbMotionSmoothed[i] * 0.74 + lm[i] * 0.26;
+      }
+    }
+  }
+
+  if (!noise) return;
+  for (let p = 0; p < n; p++) {
+    _setPose(p, persons[p].activity, noise, limbScores, sk);
+    _applyDelta(delta, p, _motionE, limbScores);
+  }
+}
+
+// Инициализируем мировые позиции из слотов при смене числа людей
+function _initWorldPositions(n) {
+  const slots = SLOT_LAYOUTS[Math.min(n, SLOT_LAYOUTS.length - 1)];
+  for (let p = 0; p < n; p++) {
+    const [sx, sz] = slots[p] || [0, 0];
+    personWorldPos[p].x  = sx;
+    personWorldPos[p].z  = sz;
+    personWorldPos[p].hx = sx;   // фиксируем домашнюю точку
+    personWorldPos[p].hz = sz;
+  }
+}
+
+/**
+ * 32 выхода модели = 16 пар (x,y) в пространстве признаков. Их нельзя напрямую масштабировать в «рост человека»:
+ * порядок ключевых точек при обучении может не совпадать с BONES, и абсолютная укладка даёт «ком на полу».
+ * Интерпретация: отклонения от опорной точки (таз/середина тела), а не от глобального среднего — иначе
+ * общий сдвиг при «руке вверх» съедается и фигура почти не меняется.
+ */
+const MODEL_KP_PERM = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
+/** Индекс опорной точки в выходе модели (таз в нашем шаблоне = 15) */
+const MODEL_ANCHOR_KP = 15;
+/** Если размах 2D выхода от таза меньше — модель «схлопнулась», деление на span даёт гигантский масштаб и «облако» суставов. */
+const SKEL_MODEL_SPAN_MIN_DIRECT = 0.1;
+const SKEL_MODEL_SPAN_FLOOR = 0.2;
+const SKEL_MODEL_SPAN_CAP = 8;
+const SKEL_WORLD_SCALE_MAX = 4.2;
+/** Мин. макс. расстояние между любыми двумя суставами (м) — ниже выглядит как «облако». */
+const SKEL_DIRECT_MIN_EXTENT_M = 0.58;
+/** Мин. средний разброс суставов от центроида (м). */
+const SKEL_DIRECT_MIN_MEAN_SPREAD_M = 0.13;
+/** Верхняя доля прямого CSI в смеси с манекеном (ползунок 100% → фактически это значение). Иначе Wi‑Fi выход почти плоский → всё слипается в шар. */
+const POSE_DIRECT_BLEND_CAP = 0.78;
+/** Макс. длина одной кости в прямом режиме (м); длиннее — выброс модели, лучше манекен. */
+const SKEL_DIRECT_MAX_BONE_M = 1.52;
+
+function _skelModelSpanFromPelvis(sk) {
+  const ja = MODEL_KP_PERM[MODEL_ANCHOR_KP];
+  const ax = Number(sk[ja * 2]);
+  const ay = Number(sk[ja * 2 + 1]);
+  if (!Number.isFinite(ax) || !Number.isFinite(ay)) return NaN;
+  let span = 1e-9;
+  for (let i = 0; i < 16; i++) {
+    const j = MODEL_KP_PERM[i];
+    const x = Number(sk[j * 2]);
+    const y = Number(sk[j * 2 + 1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    span = Math.max(span, Math.hypot(x - ax, y - ay));
+  }
+  return span;
+}
+
+function _skelMeanSpreadFromCentroid(pts) {
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (let i = 0; i < 16; i++) {
+    cx += pts[i][0];
+    cy += pts[i][1];
+    cz += pts[i][2];
+  }
+  cx /= 16;
+  cy /= 16;
+  cz /= 16;
+  let s = 0;
+  for (let i = 0; i < 16; i++) {
+    s += Math.hypot(pts[i][0] - cx, pts[i][1] - cy, pts[i][2] - cz);
+  }
+  return s / 16;
+}
+
+function _skelPosePointsPlausible(pts) {
+  if (!pts || pts.length < 16) return false;
+  let maxPair = 0;
+  for (let i = 0; i < 16; i++) {
+    for (let k = i + 1; k < 16; k++) {
+      const d = Math.hypot(
+        pts[i][0] - pts[k][0],
+        pts[i][1] - pts[k][1],
+        pts[i][2] - pts[k][2],
+      );
+      maxPair = Math.max(maxPair, d);
+    }
+  }
+  if (maxPair < SKEL_DIRECT_MIN_EXTENT_M) return false;
+  if (_skelMeanSpreadFromCentroid(pts) < SKEL_DIRECT_MIN_MEAN_SPREAD_M) return false;
+  for (let bi = 0; bi < BONES.length; bi++) {
+    const a = BONES[bi][0];
+    const b = BONES[bi][1];
+    const d = Math.hypot(
+      pts[a][0] - pts[b][0],
+      pts[a][1] - pts[b][1],
+      pts[a][2] - pts[b][2],
+    );
+    if (!Number.isFinite(d)) return false;
+    if (d < 0.018) return false;
+    if (d > SKEL_DIRECT_MAX_BONE_M) return false;
+  }
+  return true;
+}
+
+function _skelDirectPoseIsPlausible(out) {
+  return _skelPosePointsPlausible(out);
+}
+
+/**
+ * Прямая укладка 32 выходов в мир: якорь = таз (15), масштаб от размаха и роста из карточки.
+ * Без манекена — иначе движения почти не видны (остаток был мал относительно шаблона).
+ */
+function _skelWorldFromModel(sk, wp, p) {
+  if (!sk || sk.length < 32 || p !== 0) return null;
+  const spanRaw = _skelModelSpanFromPelvis(sk);
+  if (!Number.isFinite(spanRaw) || spanRaw < SKEL_MODEL_SPAN_MIN_DIRECT) return null;
+  const span = Math.min(SKEL_MODEL_SPAN_CAP, Math.max(SKEL_MODEL_SPAN_FLOOR, spanRaw));
+  const ph = typeof persons[p].height === 'number' && persons[p].height > 120 ? persons[p].height : 175;
+  let scale = ((ph / 100) * 0.92) / span;
+  if (!Number.isFinite(scale) || scale <= 0) return null;
+  scale = Math.min(scale, SKEL_WORLD_SCALE_MAX);
+  const ja = MODEL_KP_PERM[MODEL_ANCHOR_KP];
+  const ax = sk[ja * 2];
+  const ay = sk[ja * 2 + 1];
+  const pelvisY = Math.max(1.05, Math.min(2.05, (ph / 100) * 0.78));
+  const out = [];
+  for (let ki = 0; ki < 16; ki++) {
+    const j = MODEL_KP_PERM[ki];
+    const jx = Number(sk[j * 2]);
+    const jy = Number(sk[j * 2 + 1]);
+    if (!Number.isFinite(jx) || !Number.isFinite(jy)) {
+      out.push([wp.x, pelvisY, wp.z]);
+      continue;
+    }
+    const dx = (jx - ax) * scale;
+    const dy = (ay - jy) * scale;
+    out.push([wp.x + dx, pelvisY + dy, wp.z]);
+  }
+  if (!_skelDirectPoseIsPlausible(out)) return null;
+  return out;
+}
+
+function _skelModelResidualDeltas(sk, p) {
+  if (!sk || sk.length < 32 || p !== 0) return null;
+  const spanRaw = _skelModelSpanFromPelvis(sk);
+  const span = Math.min(SKEL_MODEL_SPAN_CAP, Math.max(SKEL_MODEL_SPAN_FLOOR, Math.max(spanRaw, 1e-9)));
+  const scaleM = Math.min(SKEL_WORLD_SCALE_MAX, 0.92 / span);
+  const ja = MODEL_KP_PERM[MODEL_ANCHOR_KP];
+  const ax = sk[ja * 2];
+  const ay = sk[ja * 2 + 1];
+  const a = 0.62 + 0.22 * (1 - getPoseCsiTrack());
+  for (let ki = 0; ki < 16; ki++) {
+    const j = MODEL_KP_PERM[ki];
+    const dx = (sk[j * 2] - ax) * scaleM;
+    const dy = (ay - sk[j * 2 + 1]) * scaleM;
+    _skelModelDeltaSmoothed[p][ki].lerp(new THREE.Vector3(dx, dy, 0), Math.min(0.92, a));
+  }
+  return _skelModelDeltaSmoothed[p];
+}
+
+/**
+ * Смесь шаблонов по softmax активности (только sleeping/sitting/standing), EMA по кадрам.
+ */
+function _getBlendedPoseTemplates(activity) {
+  const p = activity && activity.probs;
+  if (!p || typeof p !== 'object') return null;
+  let ps = typeof p.sleeping === 'number' ? p.sleeping : 0;
+  let pi = typeof p.sitting === 'number' ? p.sitting : 0;
+  let pd = typeof p.standing === 'number' ? p.standing : 0;
+  /* Синхронно с nn_pipeline: при почти равных сидя/стоя не смешиваем шаблоны */
+  const sitStandSnap = 0.11;
+  if (pi + pd >= 0.2 && Math.abs(pi - pd) < sitStandSnap) {
+    if (pi >= pd) { pi = pi + pd; pd = 0; } else { pd = pi + pd; pi = 0; }
+  }
+  const s3 = ps + pi + pd;
+  if (s3 < 0.03) return null;
+  const ns = ps / s3;
+  const ni = pi / s3;
+  const nd = pd / s3;
+  const pe = POSE_TEMPLATE_BLEND_EMA;
+  _pwSleep = _pwSleep * (1 - pe) + ns * pe;
+  _pwSit = _pwSit * (1 - pe) + ni * pe;
+  _pwStand = _pwStand * (1 - pe) + nd * pe;
+  const s = _pwSleep + _pwSit + _pwStand;
+  if (s < 1e-8) return null;
+  const a = _pwSleep / s;
+  const b = _pwSit / s;
+  const c = _pwStand / s;
+  const out = [];
+  for (let ki = 0; ki < 16; ki++) {
+    out.push([
+      a * P.sleeping[ki][0] + b * P.sitting[ki][0] + c * P.standing[ki][0],
+      a * P.sleeping[ki][1] + b * P.sitting[ki][1] + c * P.standing[ki][1],
+      a * P.sleeping[ki][2] + b * P.sitting[ki][2] + c * P.standing[ki][2],
+    ]);
+  }
+  return out;
+}
+
+/** Усиление остатка по зоне калибровки: выше softmax по руке → чуть сильнее двигаются суставы (без «монстра») */
+function _limbResidualGain(ki, limbScores) {
+  if (!limbScores || typeof limbScores !== 'object') return 1;
+  const lk = JOINT_TO_CALIB_LIMB[ki];
+  const sc = limbScores[lk];
+  if (typeof sc !== 'number' || sc <= 0.03) return 1;
+  return 1 + 0.62 * Math.min(1, sc);
+}
+
+/**
+ * Убирает систематический «завал» влево/вправо: выход Wi‑Fi модели — плоский (x,y), все z одинаковые,
+ * из‑за чего торс часто смещён по X. Поворачиваем суставы вокруг таза в плоскости XY так,
+ * чтобы середина плеч оказалась строго над тазом (ось туловища = мировая вертикаль).
+ * Для lying не вызываем — там ось тела горизонтальная.
+ */
+function _straightenSkelUpright(p, label) {
+  if (label === 'sleeping') return;
+  const arr = skelTargets[p];
+  const Px = arr[15].x;
+  const Py = arr[15].y;
+  const Pz = arr[15].z;
+  const sx = (arr[2].x + arr[5].x) * 0.5;
+  const sy = (arr[2].y + arr[5].y) * 0.5;
+  const dx = sx - Px;
+  const dy = sy - Py;
+  if (dy < 0.12) return;
+  const th = Math.atan2(dx, dy);
+  if (Math.abs(th) < 0.017) return;
+  const ca = Math.cos(th);
+  const sa = Math.sin(th);
+  for (let ki = 0; ki < 16; ki++) {
+    const ox = arr[ki].x - Px;
+    const oy = arr[ki].y - Py;
+    const oz = arr[ki].z - Pz;
+    arr[ki].x = Px + (ox * ca - oy * sa);
+    arr[ki].y = Py + (ox * sa + oy * ca);
+    arr[ki].z = Pz + oz;
+  }
+}
+
+// Шаблон + softmax активности; при DEMO_TEMPLATE_SKELETON — только шаблон по label, без смеси CSI.
+function _setPose(p, label, noise, limbScores, sk) {
+  if (label === 'walking') return;
+  /* Низкий «прямой CSI»: один дискретный шаблон по активности — без смеси сидя+сон+стоя (иначе «перекошенный» компромисс). */
+  let pose = null;
+  if (getPoseCsiTrack() > 0.08) pose = _getBlendedPoseTemplates(currentActivity);
+  if (!pose) {
+    pose = label === 'sleeping' ? P.sleeping
+      : label === 'sitting' ? P.sitting
+      : P.standing;
+  }
+  const wp = personWorldPos[p];
+  const maxZ = _maxLimbScore(limbScores);
+  const noiseScale = 0.22 + 0.78 * Math.min(1, maxZ * 1.35);
+
+  if (DEMO_TEMPLATE_SKELETON) {
+    for (let ki = 0; ki < 16; ki++) {
+      let x = pose[ki][0] + wp.x;
+      let y = pose[ki][1];
+      let z = pose[ki][2] + wp.z;
+      if (noise) {
+        const ni = (ki + p * 5) % 16;
+        x += noise[ni * 2] * 0.048 * noiseScale;
+        y += noise[ni * 2 + 1] * 0.032 * noiseScale;
+      }
+      skelTargets[p][ki].set(x, y, z);
+    }
+    return;
+  }
+
+  const wUser = getPoseCsiTrack();
+  let wBlend = Math.min(wUser, POSE_DIRECT_BLEND_CAP);
+  let direct = _skelWorldFromModel(sk, wp, p);
+  if (direct && wBlend > 0.001) {
+    const blendTest = [];
+    for (let ki = 0; ki < 16; ki++) {
+      blendTest.push([
+        (1 - wBlend) * (pose[ki][0] + wp.x) + wBlend * direct[ki][0],
+        (1 - wBlend) * pose[ki][1] + wBlend * direct[ki][1],
+        (1 - wBlend) * (pose[ki][2] + wp.z) + wBlend * direct[ki][2],
+      ]);
+    }
+    if (!_skelPosePointsPlausible(blendTest)) {
+      direct = null;
+      wBlend = 0;
+    }
+  }
+  const useResidual = MODEL_DRES_IN_SCENE && (wUser < 0.88 || !direct);
+  const dres = useResidual ? _skelModelResidualDeltas(sk, p) : null;
+  let mr0 = 0;
+  if (MODEL_DRES_IN_SCENE && dres) {
+    if (direct && wBlend > 0.001) {
+      mr0 = MODEL_RESIDUAL_STRENGTH * (1 - wBlend) * (1 - wBlend);
+    } else {
+      mr0 = MODEL_RESIDUAL_STRENGTH * Math.min(1, 0.38 + wUser * 0.52);
+    }
+  }
+  for (let ki = 0; ki < 16; ki++) {
+    let tx;
+    let ty;
+    let tz;
+    if (direct && wBlend > 0.001) {
+      tx = (1 - wBlend) * (pose[ki][0] + wp.x) + wBlend * direct[ki][0];
+      ty = (1 - wBlend) * pose[ki][1] + wBlend * direct[ki][1];
+      tz = (1 - wBlend) * (pose[ki][2] + wp.z) + wBlend * direct[ki][2];
+    } else {
+      tx = pose[ki][0] + wp.x;
+      ty = pose[ki][1];
+      tz = pose[ki][2] + wp.z;
+    }
+    if (dres && mr0 > 1e-6) {
+      const mr = mr0 * _limbResidualGain(ki, limbScores);
+      tx += dres[ki].x * mr;
+      ty += dres[ki].y * mr;
+      tz += dres[ki].z * mr;
+    }
+    let x = tx;
+    let y = ty;
+    let z = tz;
+    if (noise) {
+      const ni = (ki + p * 5) % 16;
+      let nmul = (1 - Math.min(0.85, wUser) * 0.5);
+      if (wUser > 0.55) nmul *= Math.max(0.12, 1.35 - wUser);
+      x += noise[ni * 2] * 0.048 * noiseScale * nmul;
+      y += noise[ni * 2 + 1] * 0.032 * noiseScale * nmul;
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      x = pose[ki][0] + wp.x;
+      y = pose[ki][1];
+      z = pose[ki][2] + wp.z;
+    }
+    skelTargets[p][ki].set(x, y, z);
+  }
+  if (getPoseCsiTrack() > 0.12) _straightenSkelUpright(p, label);
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// ANIMATION
+// ═══════════════════════════════════════════════════════════════
+let t0 = null;
+function animate(t) {
+  requestAnimationFrame(animate);
+  if (t0 === null) t0 = t;
+  const el = (t - t0) * 0.001;
+
+  // Left orbit
+  const la = el * 0.12;
+  lpCamera.position.set(Math.sin(la) * 8, 5 + Math.sin(el * 0.3) * 0.6, Math.cos(la) * 8);
+  lpCamera.lookAt(0, 1.2, 0);
+  lpR.render(lpScene, lpCamera);
+
+  // ── Движение скелетов ────────────────────────────────────────
+  const WALK_SPEED   = 0.020;
+
+  // Радиус калибровки масштабируется по площади квартиры
+  const _sqm     = parseInt(document.getElementById('sqm-input')?.value) || 40;
+  const CALIB_R  = Math.min(9.5, Math.max(3, Math.sqrt(_sqm) * 0.75));
+
+  // Во время калибровки продолжаем двигаться некоторое время даже если ходьба не детектируется
+  // (компенсация ложных пауз детектора)
+  const now_ms = Date.now();
+  for (let p = 0; p < activePeople; p++) {
+    const wp   = personWorldPos[p];
+    /* Ходьба: только по метке ML «walking», либо при обходе комнаты по движению CSI.
+       Не используем общий _motionE в dev — иначе «ходит» при сидении. */
+    const isWalk =
+      persons[p].activity === 'walking' ||
+      (roomCalibMode && _motionE > 0.06);
+
+    // В режиме калибровки: двигаемся если ходьба детектируется, НЕ возвращаемся к дому
+    if (isWalk) {
+      if (devMode) {
+        // ── DevMode: скелет перемещается по комнате ──────────────
+        if (isWalk) wp._walkUntil = now_ms + 1500;
+
+        const minDir = roomCalibMode ? 5000 : 1500;
+        const maxDir = roomCalibMode ? 9000 : 3500;
+        if (now_ms > wp.nextDirChange) {
+          const turn = roomCalibMode ? 0.9 : 2.0;
+          wp.dir += (Math.random() - 0.5) * turn;
+          wp.nextDirChange = now_ms + minDir + Math.random() * (maxDir - minDir);
+        }
+
+        if (roomCalibMode) {
+          const GR = CALIB_R;
+          if (wp.x >  GR) wp.dir = Math.PI - wp.dir;
+          if (wp.x < -GR) wp.dir = Math.PI - wp.dir;
+          if (wp.z >  GR) wp.dir = -wp.dir;
+          if (wp.z < -GR) wp.dir = -wp.dir;
+        }
+
+        wp.x += Math.sin(wp.dir) * WALK_SPEED;
+        wp.z += Math.cos(wp.dir) * WALK_SPEED;
+
+        if (roomCalibMode) _addTrailPt(wp.x, wp.z);
+        else               updateOccGrid(wp.x, wp.z, _lastRoomMap);
+      }
+      // Анимация шагов (в обоих режимах — скелет показывает ходьбу на месте)
+      const phase = (Math.sin(el * 2.4 + p * 1.1) + 1) * 0.5;
+      for (let ki = 0; ki < 16; ki++) {
+        skelTargets[p][ki].set(
+          P.walkA[ki][0] + (P.walkB[ki][0]-P.walkA[ki][0])*phase + wp.x,
+          P.walkA[ki][1] + (P.walkB[ki][1]-P.walkA[ki][1])*phase,
+          P.walkA[ki][2] + (P.walkB[ki][2]-P.walkA[ki][2])*phase + wp.z,
+        );
+      }
+
+    } else if (devMode && !roomCalibMode) {
+      /* dev: без привязки к центру слота — позиция не трогается, пока не «walking» */
+    } else if (!devMode) {
+      // Обычный режим: скелет всегда на домашней точке
+      wp.x = wp.hx;
+      wp.z = wp.hz;
+    }
+  }
+
+  // ── Лерп + рендер скелетов ──────────────────────────────────
+  const anyWalking = activePeople > 0 && persons.slice(0, activePeople).some(p => p.activity === 'walking');
+  const lr = getSkelReactivity() / 100;
+  const lerpSpeed = anyWalking ? (0.24 + lr * 0.14) : (0.18 + lr * 0.22);
+  const JNT_SCALE = [2.0,1.2,1.1,0.9,0.75,1.1,0.9,0.75,1.0,0.9,0.8,1.0,0.9,0.8,1.0,1.1];
+  const _col = new THREE.Color();
+  const _limbTint = new THREE.Color();
+  let glowX = 0, glowY = 1.5, glowZ = 0;
+
+  for (let p = 0; p < MAX_PPL; p++) {
+    const active = p < activePeople;
+    const bm     = boneMeshes[p];
+
+    // Лерпаем позиции
+    for (let ki = 0; ki < 16; ki++)
+      skelCurrs[p][ki].lerp(skelTargets[p][ki], lerpSpeed);
+
+    if (active) {
+      // Кости
+      const pos = bm.geometry.attributes.position.array;
+      BONES.forEach(([a, b], i) => {
+        const ca = skelCurrs[p][a], cb = skelCurrs[p][b];
+        pos[i*6]=ca.x; pos[i*6+1]=ca.y; pos[i*6+2]=ca.z;
+        pos[i*6+3]=cb.x; pos[i*6+4]=cb.y; pos[i*6+5]=cb.z;
+      });
+      bm.geometry.attributes.position.needsUpdate = true;
+      bm.visible = true;
+
+      // Суставы (в dev: оттенок по группе конечности — движение от дельты модели)
+      for (let ki = 0; ki < 16; ki++) {
+        _col.setHex(PPL_COLORS[p]);
+        if (devMode && !roomCalibMode) {
+          const li = JOINT_TO_LIMB[ki];
+          const g = _limbMotionSmoothed[li];
+          _limbTint.setHex(LIMB_PALETTE[li]);
+          _col.lerp(_limbTint, g * 0.5);
+        }
+        rpDummy.position.copy(skelCurrs[p][ki]);
+        rpDummy.scale.setScalar(JNT_SCALE[ki]);
+        rpDummy.updateMatrix();
+        jointMesh.setMatrixAt(p * 16 + ki, rpDummy.matrix);
+        jointMesh.setColorAt(p * 16 + ki, _col);
+      }
+
+      // Светильник: усредняем по торсам всех людей
+      const tor = skelCurrs[p][14];
+      glowX += tor.x / activePeople;
+      glowY  = Math.max(glowY, tor.y + 0.5);
+      glowZ += tor.z / activePeople;
+    } else {
+      bm.visible = false;
+      // Прячем неактивные суставы (масштаб 0)
+      const hidden = new THREE.Matrix4().makeScale(0,0,0);
+      for (let ki = 0; ki < 16; ki++) jointMesh.setMatrixAt(p * 16 + ki, hidden);
+    }
+  }
+
+  jointMesh.instanceMatrix.needsUpdate = true;
+  if (jointMesh.instanceColor) jointMesh.instanceColor.needsUpdate = true;
+  jointMesh.visible = activePeople > 0;
+
+  rpGlow.position.set(glowX, glowY, glowZ + 0.3);
+  rpGlow.intensity = activePeople > 0
+    ? (0.35 + Math.sin(el * 3) * 0.08) * Math.min(activePeople, 3)
+    : 0.2;
+
+  // ── Лейблы имён + витальные панели: проецируем 3D → 2D ──────
+  const rw2 = rpEl.clientWidth, rh2 = rpEl.clientHeight;
+  for (let p = 0; p < MAX_PPL; p++) {
+    const lbl = nameLabels[p];
+    const vp  = vitalsPanels[p];
+    if (devMode) {
+      lbl.div.style.display = 'none';
+      vp.div.style.display  = 'none';
+      continue;
+    }
+    if (p < activePeople) {
+      const head  = skelCurrs[p][0];
+      const torso = skelCurrs[p][14];
+
+      // Имя — над головой
+      _projV.set(head.x, head.y + 0.28, head.z).project(rpCamera);
+      const sx = ( _projV.x + 1) / 2 * rw2;
+      const sy = (-_projV.y + 1) / 2 * rh2;
+      lbl.div.style.left    = sx + 'px';
+      lbl.div.style.top     = sy + 'px';
+      lbl.div.textContent   = persons[p].name;
+      lbl.div.style.display = 'block';
+
+      // Витальные — справа от торса
+      _projV.set(torso.x + 0.6, torso.y + 0.3, torso.z).project(rpCamera);
+      const vx = ( _projV.x + 1) / 2 * rw2;
+      const vy = (-_projV.y + 1) / 2 * rh2;
+      // Показываем только если на экране
+      if (_projV.z < 1) {
+        vp.div.style.left    = vx + 'px';
+        vp.div.style.top     = vy + 'px';
+        vp.div.style.display = 'block';
+        // Витальные: по активности + биологическая синусоидная вариация
+        const act = persons[p].activity || 'standing';
+        const _VB = { sleeping:{hr:58,rr:11}, sitting:{hr:68,rr:13}, standing:{hr:72,rr:15}, walking:{hr:88,rr:19} };
+        const vb  = _VB[act] || _VB.standing;
+        const now_t = el;
+        const hr  = Math.round(vb.hr + Math.sin(now_t*0.11+p*1.7)*3 + _motionE*12);
+        const rr  = Math.round(vb.rr + Math.sin(now_t*0.05+p*2.1)*1.5);
+        let ht = heightModeAuto ? _lastHeightEst : (persons[p].height || 175);
+        if (heightModeAuto) {
+          const c = persons[p].height || 175;
+          ht = Math.round(Math.min(c + 12, Math.max(c - 22, ht)));
+        }
+        document.getElementById(`vhr-${p}`).textContent = hr;
+        document.getElementById(`vrr-${p}`).textContent = rr;
+        document.getElementById(`vht-${p}`).textContent = ht;
+      } else {
+        vp.div.style.display = 'none';
+      }
+    } else {
+      lbl.div.style.display = 'none';
+      vp.div.style.display  = 'none';
+    }
+  }
+  // ── WiFi сфера и кольца ───────────────────────────────────────
+  wifiSphere.rotation.y += 0.0015 + _motionE * 0.004;
+  wifiSphere.rotation.x += 0.0007;
+  wifiRings.forEach((r, i) => {
+    r.material.opacity = (0.05 + _motionE * 0.12) / (i + 1);
+  });
+
+  updateDevTrackingPanel();
+
+  rpControls.update();
+  composer.render();
+}
+requestAnimationFrame(animate);
+
+
+// ═══════════════════════════════════════════════════════════════
+// RESIZE
+// ═══════════════════════════════════════════════════════════════
+    addEventListener('resize', () => {
+  const lw = lpEl.clientWidth, lh = lpEl.clientHeight;
+  if (lw > 0) { lpCamera.aspect = lw / lh; lpCamera.updateProjectionMatrix(); lpR.setSize(lw, lh); }
+  const rw = rpEl.clientWidth, rh = rpEl.clientHeight;
+  rpCamera.aspect = rw / rh; rpCamera.updateProjectionMatrix();
+  rpR.setSize(rw, rh); composer.setSize(rw, rh);
+  rpControls.update();
+});
+
+
+// ═══════════════════════════════════════════════════════════════
+// ACTIVITY HUD (right panel)
+// ═══════════════════════════════════════════════════════════════
+const _LIMB_MATCH_LABELS = { head: 'Голова', r_arm: 'П.рука', l_arm: 'Л.рука', r_leg: 'П.нога', l_leg: 'Л.нога', torso: 'Торс' };
+
+function renderLimbMatchHUD(limbScores, matchSource) {
+  const box = document.getElementById('ah-limb-match');
+  if (!box) return;
+  if (!limbScores || typeof limbScores !== 'object') {
+    box.classList.remove('show');
+    box.textContent = '';
+    return;
+  }
+  const keys = Object.keys(limbScores).filter((k) => typeof limbScores[k] === 'number');
+  if (!keys.length) {
+    box.classList.remove('show');
+    box.textContent = '';
+    return;
+  }
+  keys.sort((a, b) => (limbScores[b] || 0) - (limbScores[a] || 0));
+  const top = keys.slice(0, 4).map((k) => `${_LIMB_MATCH_LABELS[k] || k}: ${Math.round((limbScores[k] || 0) * 100)}%`);
+  const src = matchSource === 'net' ? 'линейная модель зон' : 'эталоны CSI';
+  box.classList.add('show');
+  box.innerHTML = `<div class="ah-limb-mt">Активность зон (${src})</div>${top.join(' · ')}`;
+}
+
+function renderActivityHUD(act, limbScores, matchSource) {
+  const el = document.getElementById('ah-content');
+  renderLimbMatchHUD(limbScores, matchSource);
+  if (!act) {
+    el.innerHTML = SHOW_ACTIVITY_CALIB
+      ? '<div class="ah-na">Сценарии: запишите минимум <strong>два</strong> разных класса в панели ⚙ и нажмите «Обучить» — здесь появятся вероятности (пусто / сидят / стоят / …). Пока модели нет — только шаблон «Отображение» и CSI.</div>'
+      : '<div class="ah-na">Классификатор сцен отключён.<br>Поза — вручную («Отображение») и выход позовой модели CSI.</div>';
+    return;
+  }
+  const barsHtml = ACTIVITIES.map(a => {
+    const pct = Math.round((act.probs[a.key] || 0) * 100);
+    return `<div class="ah-bar-row">
+      <div class="ah-bar-name">${a.icon} ${a.key === 'empty' ? 'пусто' : a.key}</div>
+      <div class="ah-bar-track"><div class="ah-bar-fill bar-${a.key}" style="width:${pct}%"></div></div>
+      <div class="ah-bar-pct">${pct}%</div>
+    </div>`;
+  }).join('');
+  const dualHint = act.dual_esp
+    ? `<div class="ah-dual-hint" title="Вероятности усреднены по двум CSI">📡 Два ESP · ${act.dual_fusion_mode === 'max' ? 'max' : 'mean'}${act.dual_partner_ip ? ` · ${act.dual_partner_ip}` : ''}</div>`
+    : '';
+  el.innerHTML = `
+    <div class="ah-ppl">${act.n_people}</div>
+    <div class="ah-ppl-lbl">чел. обнаружено</div>
+    <div class="ah-act-label">${ACTIVITIES.find(a=>a.key===act.label)?.ru || act.label}</div>
+    ${dualHint}
+    <div class="ah-bars">${barsHtml}</div>`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// TRAINING DRAWER UI
+// ═══════════════════════════════════════════════════════════════
+let nPeople   = 1;
+let duration  = 10;
+let sampleCounts = Object.fromEntries(ACTIVITIES.map(a => [a.key, 0]));
+let recDuration  = 10;
+let recLabel     = null;
+
+// Build activity buttons
+const grid = document.getElementById('act-grid');
+ACTIVITIES.forEach(act => {
+  grid.insertAdjacentHTML('beforeend', `
+    <div class="act-row" id="row-${act.key}">
+      <button class="act-btn" id="btn-${act.key}" data-key="${act.key}">${act.ru}</button>
+      <span class="act-count" id="cnt-${act.key}">0</span>
+      <button class="act-del" id="del-${act.key}" title="Очистить">✕</button>
+    </div>`);
+  document.getElementById(`btn-${act.key}`).addEventListener('click', () => startRec(act.key));
+  document.getElementById(`del-${act.key}`).addEventListener('click', () => clearClass(act.key));
+});
+(function syncActivityCalibSectionVisibility() {
+  const sec = document.getElementById('activity-calib-section');
+  if (!sec) return;
+  if (SHOW_ACTIVITY_CALIB) {
+    sec.style.display = 'block';
+    sec.removeAttribute('aria-hidden');
+  }
+})();
+
+function updateCountsUI(counts) {
+  if (!counts) return;
+  sampleCounts = { ...sampleCounts, ...counts };
+  ACTIVITIES.forEach(a => {
+    const n = sampleCounts[a.key] || 0;
+    if (SHOW_ACTIVITY_CALIB) {
+      const el = document.getElementById(`cnt-${a.key}`);
+      if (el) { el.textContent = n > 0 ? n : '—'; el.className = 'act-count' + (n > 0 ? ' has' : ''); }
+      const btn = document.getElementById(`btn-${a.key}`);
+      if (btn && !btn.classList.contains('active')) {
+        btn.className = 'act-btn' + (n > 0 ? ' done' : '');
+      }
+      for (let p = 0; p < MAX_PPL; p++) {
+        const cntEl = document.getElementById(`pcalcnt-${p}-${a.key}`);
+        if (cntEl) {
+          cntEl.textContent = n > 0 ? n : '—';
+          cntEl.className   = 'pcfg-cal-cnt' + (n > 0 ? ' has' : '');
+        }
+      }
+    }
+  });
+}
+
+// People counter
+const pplVal = document.getElementById('ppl-val');
+
+// ── Per-person config UI ──────────────────────────────────────
+const PACT_OPTIONS = [
+  { key:'sleeping', icon:'🌙' },
+  { key:'sitting',  icon:'🪑' },
+  { key:'standing', icon:'🧍' },
+  { key:'walking',  icon:'🚶' },
+];
+
+function renderPersonConfigs() {
+  const container = document.getElementById('person-configs');
+  container.innerHTML = '';
+  const n = Math.min(nPeople, MAX_PPL);
+  for (let p = 0; p < n; p++) {
+    const hexStr = '#' + PPL_COLORS[p].toString(16).padStart(6, '0');
+    const cfg    = persons[p];
+    const wrap   = document.createElement('div');
+    wrap.className = 'pcfg';
+
+    // ── Top: dot + name ──────────────────────────────────
+    const top = document.createElement('div');
+    top.className = 'pcfg-top';
+    const dot = document.createElement('div');
+    dot.className = 'pcfg-dot'; dot.style.background = hexStr;
+    const nameInput = document.createElement('input');
+    nameInput.className   = 'pcfg-name';
+    nameInput.value       = cfg.name;
+    nameInput.placeholder = `Человек ${p+1}`;
+    nameInput.addEventListener('input', () => {
+      persons[p].name = nameInput.value || `Человек ${p+1}`;
+      if (nameLabels[p]) nameLabels[p].div.textContent = persons[p].name;
+    });
+    top.append(dot, nameInput);
+    wrap.appendChild(top);
+
+    // ── Duration ─────────────────────────────────────────
+    const durRow = document.createElement('div');
+    durRow.className = 'pcfg-dur-row';
+    const durInput = document.createElement('input');
+    durInput.type = 'number'; durInput.className = 'pcfg-dur-input';
+    durInput.value = cfg.duration; durInput.min = 1;
+    durInput.addEventListener('input', () => { persons[p].duration = Math.max(1, parseInt(durInput.value) || 10); });
+    const htInput = document.createElement('input');
+    htInput.type = 'number'; htInput.className = 'pcfg-dur-input pcfg-ht-input';
+    htInput.value = cfg.height || 175; htInput.min = 100; htInput.max = 220;
+    htInput.title = 'Рост в см (только в режиме «Вручную»)';
+    htInput.addEventListener('input', () => { persons[p].height = parseInt(htInput.value) || 175; });
+    durRow.append('Запись: ', durInput, ' с  Рост: ', htInput, ' см');
+    wrap.appendChild(durRow);
+
+    if (SHOW_ACTIVITY_CALIB) {
+      const calSec = document.createElement('div');
+      calSec.className = 'd-section-title';
+      calSec.style.marginTop = '6px';
+      calSec.textContent = 'Калибровка поз';
+      wrap.appendChild(calSec);
+
+      const calGrid = document.createElement('div');
+      calGrid.className = 'pcfg-cal-grid';
+      PACT_OPTIONS.forEach(opt => {
+        const calRow = document.createElement('div');
+        calRow.className = 'pcfg-cal-row';
+
+        const icon = document.createElement('span');
+        icon.className = 'pcfg-cal-icon'; icon.textContent = opt.icon;
+
+        const lbl = document.createElement('span');
+        lbl.className = 'pcfg-cal-lbl';
+        lbl.textContent = opt.key === 'sleeping' ? 'Спит'
+                        : opt.key === 'sitting'  ? 'Сидит'
+                        : opt.key === 'standing' ? 'Стоит'
+                        : 'Ходит';
+
+        const cntEl = document.createElement('span');
+        cntEl.className = 'pcfg-cal-cnt' + ((sampleCounts[opt.key] || 0) > 0 ? ' has' : '');
+        cntEl.id        = `pcalcnt-${p}-${opt.key}`;
+        cntEl.textContent = (sampleCounts[opt.key] || 0) > 0 ? sampleCounts[opt.key] : '—';
+
+        const recBtn = document.createElement('button');
+        recBtn.className = 'pcfg-cal-rec';
+        recBtn.style.color = hexStr;
+        recBtn.id    = `pcalrec-${p}-${opt.key}`;
+        recBtn.title = `Записать: ${opt.key}`;
+        recBtn.textContent = '⏺';
+        recBtn.addEventListener('click', () => startPersonRec(p, opt.key));
+
+        calRow.append(icon, lbl, cntEl, recBtn);
+        calGrid.appendChild(calRow);
+      });
+      wrap.appendChild(calGrid);
+
+      const prog = document.createElement('div');
+      prog.className = 'pcfg-prog'; prog.id = `pprog-${p}`;
+      prog.innerHTML = '<div class="pcfg-prog-fill" style="width:100%"></div>';
+      wrap.appendChild(prog);
+    }
+
+    // ── Display activity (what skeleton shows) ────────────
+    const dispSec = document.createElement('div');
+    dispSec.className = 'd-section-title';
+    dispSec.style.marginTop = '6px';
+    dispSec.textContent = 'Отображение';
+    wrap.appendChild(dispSec);
+
+    const row = document.createElement('div');
+    row.className = 'pact-row';
+    personPactRows[p] = row;
+    PACT_OPTIONS.forEach(opt => {
+      const btn = document.createElement('button');
+      btn.className = 'pact-btn' + (cfg.activity === opt.key ? ' sel' : '');
+      btn.style.color = hexStr;
+      btn.title = opt.key;
+      btn.textContent = opt.icon;
+      btn.addEventListener('click', () => {
+        persons[p].activity = opt.key;
+        row.querySelectorAll('.pact-btn').forEach(b => b.classList.remove('sel'));
+        btn.classList.add('sel');
+      });
+      row.appendChild(btn);
+    });
+    wrap.appendChild(row);
+
+    container.appendChild(wrap);
+  }
+  syncHeightModeUI();
+}
+
+document.getElementById('height-mode-auto').addEventListener('click', () => {
+  heightModeAuto = true;
+  syncHeightModeUI();
+});
+document.getElementById('height-mode-manual').addEventListener('click', () => {
+  heightModeAuto = false;
+  syncHeightModeUI();
+});
+
+document.getElementById('ppl-minus').addEventListener('click', () => {
+  nPeople = Math.max(0, nPeople - 1);
+  pplVal.textContent = nPeople;
+  activePeople = nPeople;
+  renderPersonConfigs();
+});
+document.getElementById('ppl-plus' ).addEventListener('click', () => {
+  nPeople = Math.min(MAX_PPL, nPeople + 1);
+  pplVal.textContent = nPeople;
+  activePeople = nPeople;
+  renderPersonConfigs();
+});
+renderPersonConfigs(); // initial render
+
+// ── Global scenario duration ──────────────────────────────────
+document.getElementById('gdur-input').addEventListener('input', e => {
+  duration = Math.max(1, parseInt(e.target.value) || 10);
+});
+
+// ── Per-person recording ──────────────────────────────────────
+let recPersonIdx = -1;
+
+function startPersonRec(p, forceLabel = null) {
+  const label = forceLabel ?? persons[p].activity;
+  recPersonIdx  = p;
+  recLabel      = label;
+  recDuration   = persons[p].duration || duration;
+  send({ cmd: 'calibrate_start', label, n_people: nPeople, duration: recDuration });
+  // Подсветить нужную кнопку записи
+  document.querySelectorAll('.pcfg-cal-rec').forEach(b => b.classList.remove('recording'));
+  const specific = document.getElementById(`pcalrec-${p}-${label}`);
+  if (specific) specific.classList.add('recording');
+}
+
+// ── Reset all calibration data ────────────────────────────────
+function clearAll() {
+  if (!confirm('Сбросить ВСЕ данные калибровки и обученную модель?')) return;
+  send({ cmd: 'clear_all' });
+  document.getElementById('train-result').textContent = '';
+  document.getElementById('train-result').className   = '';
+}
+document.getElementById('reset-btn').addEventListener('click', clearAll);
+
+// ── Room calibration button ───────────────────────────────────
+const roomCalibBtn = document.getElementById('room-calib-btn');
+const roomCalibSt  = document.getElementById('room-calib-status');
+let   _calibTimer  = null;
+
+roomCalibBtn.addEventListener('click', () => {
+  if (!roomCalibMode) {
+    // Начинаем обход
+    startRoomCalib();
+    roomCalibBtn.textContent = '✓ Завершить обход';
+    roomCalibBtn.classList.add('active');
+    roomCalibSt.textContent  = '🔴 Запись... ходите по периметру';
+    // Статус с числом точек
+    _calibTimer = setInterval(() => {
+      roomCalibSt.textContent = `🔴 Запись... ${_trailCount} точек пути`;
+    }, 500);
+  } else {
+    // Завершаем
+    clearInterval(_calibTimer);
+    finishRoomCalib();
+    roomCalibBtn.textContent = '📐 Обход комнаты';
+    roomCalibBtn.classList.remove('active');
+    roomCalibSt.textContent  = `✅ Готово — ${_calibVisited.size} клеток карты`;
+  }
+});
+
+// Update per-person progress bars from calib_status
+function updatePersonProgress(cs) {
+  for (let p = 0; p < MAX_PPL; p++) {
+    const bar  = document.getElementById(`pprog-${p}`);
+    const btn  = document.getElementById(`prec-${p}`);
+    if (!bar || !btn) continue;
+    if (cs && cs.recording && recPersonIdx === p) {
+      bar.classList.add('show');
+      const fill = bar.querySelector('.pcfg-prog-fill');
+      if (fill) fill.style.width = (cs.remaining / recDuration * 100) + '%';
+    } else {
+      bar.classList.remove('show');
+      btn.classList.remove('recording');
+    }
+  }
+}
+
+// ── Drawer toggle ─────────────────────────────────────────────
+const toggle = document.getElementById('drawer-toggle');
+const drawer = document.getElementById('drawer');
+toggle.addEventListener('click', () => {
+  const open = drawer.classList.toggle('open');
+  toggle.classList.toggle('open', open);
+  toggle.textContent = open ? '✕' : '⚙';
+  setTimeout(() => { // re-fit renderers after transition
+    const lw = lpEl.clientWidth, lh = lpEl.clientHeight;
+    if (lw > 0) { lpCamera.aspect = lw / lh; lpCamera.updateProjectionMatrix(); lpR.setSize(lw, lh); }
+  }, 280);
+});
+
+// ── Toggle CSI left panel ─────────────────────────────────────
+// Скрыт по умолчанию — правая панель на весь экран
+(function initCollapsed() {
+  // Отключаем transition при инициализации — схлопываемся мгновенно
+  lpEl.style.transition = 'none';
+  document.getElementById('divider').style.transition = 'none';
+
+  lpEl.classList.add('collapsed');
+  document.getElementById('divider').classList.add('collapsed');
+  document.getElementById('toggle-csi').textContent = '⬜ CSI';
+
+  // Один RAF гарантирует что браузер применил стили ДО чтения размеров
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const rw = rpEl.clientWidth, rh = rpEl.clientHeight;
+      if (rw > 0 && rh > 0) {
+        rpCamera.aspect = rw / rh; rpCamera.updateProjectionMatrix();
+        rpR.setSize(rw, rh); composer.setSize(rw, rh);
+        rpControls.update();
+      }
+      // Возвращаем transition для последующих кликов по кнопке
+      lpEl.style.transition = '';
+      document.getElementById('divider').style.transition = '';
+    });
+  });
+})();
+
+document.getElementById('csi-heatmap-mode').addEventListener('click', () => {
+  _csiHeatmapMode = _csiHeatmapMode === 'amp' ? 'delta' : 'amp';
+  _prevRawForDelta = null;
+  const btn = document.getElementById('csi-heatmap-mode');
+  const cap = document.getElementById('csi-plabel');
+  if (_csiHeatmapMode === 'delta') {
+    btn.textContent = 'CSI Δ дельта';
+    btn.title = 'Кадр-к-кадру |Δh|: подсвечивается изменение CSI (движение). Обратно — амплитуды.';
+    if (cap) cap.textContent = 'CSI · режим Δ (приращение) · 8×8 поднесущих';
+  } else {
+    btn.textContent = 'CSI | ампл';
+    btn.title = 'Амплитуды: как в потоке (нормировка на max). Δ: приращение кадр-к-кадру.';
+    if (cap) cap.textContent = 'CSI · амплитуды · 8×8 = 64 поднесущих (формат ESP)';
+  }
+});
+
+document.getElementById('toggle-csi').addEventListener('click', () => {
+  const collapsed = lpEl.classList.toggle('collapsed');
+  document.getElementById('divider').classList.toggle('collapsed', collapsed);
+  document.getElementById('toggle-csi').textContent = collapsed ? '⬜ CSI' : '⬛ CSI';
+  setTimeout(() => {
+    const rw = rpEl.clientWidth, rh = rpEl.clientHeight;
+    rpCamera.aspect = rw / rh; rpCamera.updateProjectionMatrix();
+    rpR.setSize(rw, rh); composer.setSize(rw, rh);
+    rpControls.update();
+    if (!collapsed) {
+      const lw = lpEl.clientWidth, lh = lpEl.clientHeight;
+      if (lw > 0) { lpCamera.aspect = lw/lh; lpCamera.updateProjectionMatrix(); lpR.setSize(lw, lh); }
+    }
+  }, 320);
+});
+
+// ── Dev mode toggle ───────────────────────────────────────────
+document.getElementById('dev-mode-btn').addEventListener('click', () => {
+  devMode = !devMode;
+  const btn = document.getElementById('dev-mode-btn');
+  btn.classList.toggle('on', devMode);
+  btn.textContent = devMode ? '⚗ В разработке ✓' : '⚗ В разработке';
+  // Показать/скрыть секцию «Обход комнаты»
+  document.getElementById('room-calib-wrap').style.display = devMode ? 'flex' : 'none';
+  document.getElementById('dev-track-panel').style.display = devMode ? 'block' : 'none';
+  // Показать/скрыть тайлы карты комнаты
+  tileMesh.visible = devMode;
+  resetMovementTrack();
+  if (!devMode) {
+    for (let i = 0; i < 6; i++) _limbMotionSmoothed[i] = 0;
+  }
+  updateLimbMotionUI();
+  // Если выключили devMode во время калибровки — остановить её
+  if (!devMode && roomCalibMode) {
+    clearInterval(_calibTimer);
+    roomCalibMode = false;
+    trailLine.visible = false;
+    const rcb = document.getElementById('room-calib-btn');
+    rcb.textContent = '📐 Обход комнаты';
+    rcb.classList.remove('active');
+    document.getElementById('room-calib-status').textContent = 'Нажмите и обойдите периметр квартиры';
+  }
+  // При выключении — вернуть скелеты на домашние позиции
+  if (!devMode) {
+    for (let p = 0; p < MAX_PPL; p++) {
+      personWorldPos[p].x = personWorldPos[p].hx;
+      personWorldPos[p].z = personWorldPos[p].hz;
+    }
+  }
+});
+
+// ── Светлая / тёмная тема ─────────────────────────────────────
+const THEME_KEY = 'ruview-theme';
+const themeBtn = document.getElementById('theme-toggle');
+function applyTheme(theme) {
+  const light = theme === 'light';
+  if (light) document.documentElement.setAttribute('data-theme', 'light');
+  else document.documentElement.removeAttribute('data-theme');
+  try { localStorage.setItem(THEME_KEY, light ? 'light' : 'dark'); } catch (_) {}
+  themeBtn.textContent = light ? '🌙' : '☀️';
+  themeBtn.title = light ? 'Тёмная тема' : 'Светлая тема';
+  themeBtn.setAttribute('aria-pressed', light ? 'true' : 'false');
+  applyTheme3D(light);
+}
+themeBtn.addEventListener('click', () => {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  applyTheme(isLight ? 'dark' : 'light');
+});
+try {
+  if (localStorage.getItem(THEME_KEY) === 'light') applyTheme('light');
+} catch (_) {}
+
+// Stop button
+document.getElementById('stop-btn').addEventListener('click', stopRec);
+
+// Train button
+document.getElementById('train-btn').addEventListener('click', trainModel);
+
+const _emptyRoomStart = document.getElementById('empty-room-start');
+const _emptyRoomCancel = document.getElementById('empty-room-cancel');
+const _emptyRoomStop = document.getElementById('empty-room-stop');
+if (_emptyRoomStart) _emptyRoomStart.addEventListener('click', startEmptyRoomCalibration);
+if (_emptyRoomCancel) _emptyRoomCancel.addEventListener('click', cancelEmptyRoomCalibration);
+if (_emptyRoomStop) _emptyRoomStop.addEventListener('click', stopRec);
+
+// ── Калибровка конечностей (зарядка по зонам) ─────────────────
+const LIMB_CALIB_STEPS = [
+  { key: 'head', title: 'Голова и шея',
+    text: 'Поворачивайте голову влево–вправо (плавно, 3–5 раз).\nНаклоны ухом к плечу с каждой стороны.\nПодбородок вверх–вниз.\nДержите ESP в поле зрения комнаты; не закрывайте тело мебелью.' },
+  { key: 'r_arm', title: 'Правая рука',
+    text: 'Поднимите правую руку вверх и опустите.\nСогните и разогните локоть несколько раз.\nВращение кистью, сжать–разжать пальцы.\nЛёгкие махи вперёд–назад.' },
+  { key: 'l_arm', title: 'Левая рука',
+    text: 'То же для левой руки: вверх–вниз, локоть, кисть, махи.\nЧередуйте темп — медленно и чуть быстрее.' },
+  { key: 'r_leg', title: 'Правая нога',
+    text: 'Перенесите вес на левую ногу. Правая: согнуть–выпрямить в колене, мах вперёд.\nПару приседаний на одной ноге (осторожно) или шаги на месте правой.' },
+  { key: 'l_leg', title: 'Левая нога',
+    text: 'То же для левой ноги: сгибание, мах, шаги на месте.\nМожно лёгкий выпад вперёд (без боли в коленях).' },
+  { key: 'torso', title: 'Торс и таз',
+    text: 'Наклоны корпуса в стороны и вперёд.\nПовороты плечевого пояса, «восьмёрка» бёдрами.\n1–2 приседания и мягкий прыжок на месте (если позволяет здоровье).\nВ конце постойте спокойно 2–3 с.' },
+];
+let limbCalibStep = 0;
+let limbRecTotalSec = 20;
+const _limbCountsCache = {};
+let _limbRecTimer = null;
+let _limbRecLimbKey = '';
+let _limbTrainTimer = null;
+
+function clearLimbTrainTimer() {
+  if (_limbTrainTimer) {
+    clearTimeout(_limbTrainTimer);
+    _limbTrainTimer = null;
+  }
+}
+
+function clearLimbRecTimer() {
+  if (_limbRecTimer) {
+    clearInterval(_limbRecTimer);
+    _limbRecTimer = null;
+  }
+}
+
+function applyLimbCounts(counts) {
+  if (!counts) return;
+  Object.assign(_limbCountsCache, counts);
+}
+
+function renderLimbCountsGrid() {
+  const el = document.getElementById('limb-counts-grid');
+  if (!el) return;
+  el.innerHTML = LIMB_CALIB_STEPS.map((s) =>
+    `<span>${s.title}: <b id="lcnt-${s.key}">${_limbCountsCache[s.key] ?? 0}</b></span>`
+  ).join('');
+}
+
+function renderLimbStep() {
+  const s = LIMB_CALIB_STEPS[limbCalibStep];
+  document.getElementById('limb-step-label').textContent = `Шаг ${limbCalibStep + 1} / ${LIMB_CALIB_STEPS.length}`;
+  const box = document.getElementById('limb-instr');
+  box.innerHTML = `<strong>${s.title}</strong><br><br>${String(s.text).replace(/\n/g, '<br>')}`;
+}
+
+function showLimbRecProgress(limbKey, remaining, total) {
+  const step = LIMB_CALIB_STEPS.find((x) => x.key === limbKey);
+  const rs = document.getElementById('limb-rec-status');
+  rs.classList.add('show');
+  document.getElementById('limb-rec-label-txt').textContent = `Запись: ${step ? step.title : limbKey}`;
+  document.getElementById('limb-rec-remain').textContent = remaining.toFixed(1);
+  document.getElementById('limb-prog-fill').style.width = `${Math.max(0, (remaining / total) * 100)}%`;
+}
+
+function hideLimbRecProgress() {
+  clearLimbRecTimer();
+  const rs = document.getElementById('limb-rec-status');
+  if (rs) rs.classList.remove('show');
+}
+
+function startLimbRec() {
+  const s = LIMB_CALIB_STEPS[limbCalibStep];
+  limbRecTotalSec = Math.max(5, Math.min(120, parseInt(document.getElementById('limb-dur-input').value, 10) || 20));
+  send({ cmd: 'limb_calib_start', limb: s.key, duration: limbRecTotalSec });
+}
+
+document.getElementById('limb-step-prev').addEventListener('click', () => {
+  limbCalibStep = (limbCalibStep + LIMB_CALIB_STEPS.length - 1) % LIMB_CALIB_STEPS.length;
+  renderLimbStep();
+});
+document.getElementById('limb-step-next').addEventListener('click', () => {
+  limbCalibStep = (limbCalibStep + 1) % LIMB_CALIB_STEPS.length;
+  renderLimbStep();
+});
+document.getElementById('limb-rec-start').addEventListener('click', startLimbRec);
+document.getElementById('limb-rec-stop').addEventListener('click', () => {
+  send({ cmd: 'limb_calib_stop' });
+  hideLimbRecProgress();
+});
+document.getElementById('limb-clear-zone').addEventListener('click', () => {
+  send({ cmd: 'limb_calib_clear', scope: LIMB_CALIB_STEPS[limbCalibStep].key });
+});
+document.getElementById('limb-clear-all').addEventListener('click', () => {
+  if (confirm('Сбросить все зоны калибровки конечностей?')) send({ cmd: 'limb_calib_clear', scope: 'all' });
+});
+document.getElementById('limb-train-net').addEventListener('click', () => {
+  const lr = document.getElementById('limb-train-result');
+  if (!ws || ws.readyState !== 1) {
+    if (lr) {
+      lr.textContent = 'Нет WebSocket — дождитесь «live» вверху.';
+      lr.style.color = '#e85a5a';
+    }
+    return;
+  }
+  if (lr) { lr.textContent = 'Обучение…'; lr.style.color = ''; }
+  clearLimbTrainTimer();
+  _limbTrainTimer = setTimeout(() => {
+    const el = document.getElementById('limb-train-result');
+    if (el && el.textContent === 'Обучение…') {
+      el.textContent = 'Нет ответа сервера. Проверьте терминал nn_pipeline.py (ошибка?) и перезапустите страницу.';
+      el.style.color = '#e85a5a';
+    }
+    _limbTrainTimer = null;
+  }, 60000);
+  send({ cmd: 'limb_calib_train' });
+});
+renderLimbStep();
+renderLimbCountsGrid();
+
+// Recording UI helpers
+let recIntervalId = null;
+/** Таймер отсчёта перед записью «пустая комната» */
+let _emptyRoomCountdownTimer = null;
+
+function clearEmptyRoomCountdown() {
+  if (_emptyRoomCountdownTimer) {
+    clearInterval(_emptyRoomCountdownTimer);
+    _emptyRoomCountdownTimer = null;
+  }
+}
+
+function showRecProgress(label, remaining, total) {
+  const isEmpty = label === 'empty';
+  const rsMain = document.getElementById('rec-status');
+  const rsEmpty = document.getElementById('empty-room-status');
+  if (isEmpty) {
+    if (rsMain) rsMain.classList.remove('show');
+    if (rsEmpty) rsEmpty.classList.add('show');
+    const el = document.getElementById('empty-room-label-txt');
+    const rem = document.getElementById('empty-room-remain');
+    const fill = document.getElementById('empty-room-prog-fill');
+    const stopB = document.getElementById('empty-room-stop');
+    const cancelB = document.getElementById('empty-room-cancel');
+    if (el) el.textContent = `Запись: ${ACTIVITIES.find(a=>a.key===label)?.ru || label}`;
+    if (rem) rem.textContent = remaining.toFixed(1) + 'с';
+    if (fill) fill.style.width = `${Math.max(0, (remaining / total) * 100)}%`;
+    if (stopB) stopB.style.display = 'block';
+    if (cancelB) cancelB.style.display = 'none';
+  } else {
+    if (rsEmpty) rsEmpty.classList.remove('show');
+    const stopB = document.getElementById('empty-room-stop');
+    if (stopB) stopB.style.display = 'none';
+    if (rsMain) rsMain.classList.add('show');
+    const rl = document.getElementById('rec-label-txt');
+    const rr = document.getElementById('rec-remain');
+    const pf = document.getElementById('prog-fill');
+    if (rl) rl.textContent = `Запись: ${ACTIVITIES.find(a=>a.key===label)?.ru || label}`;
+    if (rr) rr.textContent = remaining.toFixed(1);
+    if (pf) pf.style.width = `${(remaining / total) * 100}%`;
+  }
+  ACTIVITIES.forEach(a => {
+    const btn = document.getElementById(`btn-${a.key}`);
+    if (btn) btn.className = 'act-btn' + (a.key === label ? ' active' : (sampleCounts[a.key] > 0 ? ' done' : ''));
+  });
+}
+function hideRecProgress() {
+  clearEmptyRoomCountdown();
+  const rsMain = document.getElementById('rec-status');
+  const rsEmpty = document.getElementById('empty-room-status');
+  if (rsMain) rsMain.classList.remove('show');
+  if (rsEmpty) rsEmpty.classList.remove('show');
+  const stopB = document.getElementById('empty-room-stop');
+  if (stopB) stopB.style.display = 'none';
+  const cancelB = document.getElementById('empty-room-cancel');
+  if (cancelB) cancelB.style.display = 'none';
+  const startB = document.getElementById('empty-room-start');
+  if (startB) startB.disabled = false;
+  ACTIVITIES.forEach(a => {
+    const btn = document.getElementById(`btn-${a.key}`);
+    if (btn) btn.className = 'act-btn' + (sampleCounts[a.key] > 0 ? ' done' : '');
+  });
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// WEBSOCKET
+// ═══════════════════════════════════════════════════════════════
+let ws = null;
+const dot = document.getElementById('ws-dot');
+/** «live» = только WS; CSI идёт отдельным UDP → nn_pipeline / шлюз */
+let _wsOpenMs = 0;
+let _lastCsiMs = 0;
+/** EMA по времени: меньше дрожи теплокарты и скелета (не «SNR», а сглаживание кадра к кадру). */
+let _heightsEma64 = null;
+let _skelEma32 = null;
+const HEIGHTS_EMA_ALPHA = 0.38;
+/** 0…100: слайдер «Реактивность скелета» — см. getSkelDisplayAlpha() */
+let _skelReactivity = 38;
+const SKEL_REACT_STORAGE = 'ruview-skel-reactivity';
+
+function getSkelReactivity() {
+  return Math.max(0, Math.min(100, _skelReactivity));
+}
+
+/** EMA по кадрам для отображения скелета (выше — ближе к сырому выходу модели). */
+function getSkelDisplayAlpha() {
+  const t = getSkelReactivity() / 100;
+  return Math.min(0.96, 0.14 + t * 0.82);
+}
+
+/** Параметры внутреннего EMA по суставам (updateSkelTargets / _updateEMA). */
+function getSkelJointEmaParams() {
+  const t = getSkelReactivity() / 100;
+  return {
+    fast: 0.04 + t * 0.58,
+    slow: 0.01 + t * 0.15,
+    wSlow: Math.max(0.22, 0.55 - t * 0.28),
+  };
+}
+
+function resetSkelSmoothingBuffers() {
+  _heightsEma64 = null;
+  _skelEma32 = null;
+  _emaReady = false;
+  skelEMA.fill(0);
+  skelSlowEMA.fill(0);
+}
+
+function smoothHeightsEma(h) {
+  if (!h || h.length < 64) return h;
+  if (!_heightsEma64) _heightsEma64 = h.slice(0, 64);
+  const a = HEIGHTS_EMA_ALPHA;
+  for (let i = 0; i < 64; i++) {
+    const v = Number(h[i]);
+    if (!Number.isFinite(v)) continue;
+    _heightsEma64[i] = _heightsEma64[i] * (1 - a) + v * a;
+  }
+  return _heightsEma64;
+}
+
+function smoothSkeletonEma(sk) {
+  if (!sk || sk.length < 32) return sk;
+  const t = getSkelReactivity() / 100;
+  if (t >= 0.9) {
+    const out = [];
+    for (let i = 0; i < 32; i++) {
+      const v = Number(sk[i]);
+      out.push(Number.isFinite(v) ? v : 0);
+    }
+    _skelEma32 = null;
+    return out;
+  }
+  if (!_skelEma32) _skelEma32 = sk.slice(0, 32).map((x) => (Number.isFinite(Number(x)) ? Number(x) : 0));
+  const a = getSkelDisplayAlpha();
+  for (let i = 0; i < 32; i++) {
+    const v = Number(sk[i]);
+    if (!Number.isFinite(v)) continue;
+    _skelEma32[i] = _skelEma32[i] * (1 - a) + v * a;
+  }
+  return _skelEma32;
+}
+
+(function initSkelReactivityUI() {
+  const slider = document.getElementById('skel-react-slider');
+  const valEl = document.getElementById('skel-react-val');
+  if (!slider || !valEl) return;
+  try {
+    const s = localStorage.getItem(SKEL_REACT_STORAGE);
+    if (s != null) {
+      const n = parseInt(s, 10);
+      if (Number.isFinite(n) && n >= 0 && n <= 100) {
+        _skelReactivity = n;
+        slider.value = String(n);
+      }
+    }
+  } catch (_) {}
+  valEl.textContent = String(getSkelReactivity());
+
+  function syncFromSliderNoReset() {
+    const n = Math.max(0, Math.min(100, parseInt(slider.value, 10) || 38));
+    _skelReactivity = n;
+    valEl.textContent = String(n);
+    try {
+      localStorage.setItem(SKEL_REACT_STORAGE, String(n));
+    } catch (_) {}
+  }
+
+  function syncFromSliderAndReset() {
+    syncFromSliderNoReset();
+    resetSkelSmoothingBuffers();
+  }
+
+  slider.addEventListener('input', syncFromSliderNoReset);
+  slider.addEventListener('change', resetSkelSmoothingBuffers);
+
+  document.querySelectorAll('.skel-preset').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const v = btn.getAttribute('data-skel');
+      const n = Math.max(0, Math.min(100, parseInt(v, 10) || 38));
+      slider.value = String(n);
+      syncFromSliderAndReset();
+    });
+  });
+})();
+
+(function initPoseCsiTrackUI() {
+  const slider = document.getElementById('pose-csi-track-slider');
+  const valEl = document.getElementById('pose-csi-track-val');
+  if (!slider || !valEl) return;
+  try {
+    const s = localStorage.getItem(POSE_CSI_TRACK_STORAGE);
+    if (s != null) {
+      const n = parseInt(s, 10);
+      if (Number.isFinite(n) && n >= 0 && n <= 100) {
+        _poseCsiTrackPct = n;
+        slider.value = String(n);
+      }
+    }
+  } catch (_) {}
+  valEl.textContent = String(_poseCsiTrackPct);
+
+  function syncNoReset() {
+    const n = Math.max(0, Math.min(100, parseInt(slider.value, 10) || 0));
+    _poseCsiTrackPct = n;
+    valEl.textContent = String(n);
+    try {
+      localStorage.setItem(POSE_CSI_TRACK_STORAGE, String(n));
+    } catch (_) {}
+  }
+
+  function resetDeltaSmooth() {
+    for (let p = 0; p < MAX_PPL; p++) {
+      for (let ki = 0; ki < 16; ki++) {
+        _skelModelDeltaSmoothed[p][ki].set(0, 0, 0);
+      }
+    }
+  }
+
+  slider.addEventListener('input', syncNoReset);
+  slider.addEventListener('change', resetDeltaSmooth);
+})();
+
+function normalizeRawAmpsTo64(amps) {
+  if (!amps || !Array.isArray(amps) || amps.length < 1) return null;
+  const a = new Float64Array(64);
+  for (let i = 0; i < Math.min(64, amps.length); i++) {
+    const v = Number(amps[i]);
+    a[i] = Number.isFinite(v) ? v : 0;
+  }
+  let mx = 0;
+  for (let i = 0; i < 64; i++) mx = Math.max(mx, Math.abs(a[i]));
+  if (mx < 1e-9) mx = 1e-9;
+  const out = new Array(64);
+  for (let i = 0; i < 64; i++) out[i] = a[i] / mx;
+  return out;
+}
+
+function heightsFromCsiPacket(o) {
+  let h = (o.viz && o.viz.heights) || o.heights;
+  if (h && Array.isArray(h) && h.length >= 64) return h;
+  const amps = o.raw && o.raw.amps;
+  if (amps && Array.isArray(amps)) return normalizeRawAmpsTo64(amps);
+  return null;
+}
+
+function send(obj) {
+  const te = document.getElementById('top-err');
+  if (!ws || ws.readyState !== 1) {
+    if (te) te.textContent = 'Нет WebSocket (ожидайте «live» вверху).';
+    return;
+  }
+  if (te) te.textContent = '';
+  ws.send(JSON.stringify(obj));
+}
+
+function startEmptyRoomCalibration() {
+  const te = document.getElementById('top-err');
+  if (!ws || ws.readyState !== 1) {
+    if (te) te.textContent = 'Нет WebSocket (ожидайте «live» вверху).';
+    return;
+  }
+  const delayInp = document.getElementById('empty-room-delay-input');
+  const durInp = document.getElementById('empty-room-dur-input');
+  const delay = Math.max(3, Math.min(120, parseInt(delayInp && delayInp.value, 10) || 15));
+  const dur = Math.max(3, Math.min(60, parseInt(durInp && durInp.value, 10) || 10));
+  if (delayInp) delayInp.value = String(delay);
+  if (durInp) durInp.value = String(dur);
+
+  clearEmptyRoomCountdown();
+  const btnStart = document.getElementById('empty-room-start');
+  const btnCancel = document.getElementById('empty-room-cancel');
+  if (btnStart) btnStart.disabled = true;
+  if (btnCancel) btnCancel.style.display = 'inline-block';
+
+  const rs = document.getElementById('empty-room-status');
+  const lbl = document.getElementById('empty-room-label-txt');
+  const rem = document.getElementById('empty-room-remain');
+  const fill = document.getElementById('empty-room-prog-fill');
+  if (rs) rs.classList.add('show');
+  if (lbl) lbl.textContent = 'Выйдите из комнаты. Запись начнётся через';
+  let left = delay;
+  const tick = () => {
+    if (rem) rem.textContent = left + ' с';
+    if (fill) fill.style.width = `${(left / delay) * 100}%`;
+  };
+  tick();
+
+  _emptyRoomCountdownTimer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) {
+      clearEmptyRoomCountdown();
+      if (btnCancel) btnCancel.style.display = 'none';
+      recLabel = 'empty';
+      recDuration = dur;
+      if (lbl) lbl.textContent = 'Запись: 🏠 Пусто';
+      if (rem) rem.textContent = '…';
+      if (fill) fill.style.width = '100%';
+      const stopB = document.getElementById('empty-room-stop');
+      if (stopB) stopB.style.display = 'block';
+      send({ cmd: 'calibrate_start', label: 'empty', n_people: 0, duration: dur });
+      return;
+    }
+    tick();
+  }, 1000);
+}
+
+function cancelEmptyRoomCalibration() {
+  clearEmptyRoomCountdown();
+  const rs = document.getElementById('empty-room-status');
+  if (rs) rs.classList.remove('show');
+  const btnStart = document.getElementById('empty-room-start');
+  const btnCancel = document.getElementById('empty-room-cancel');
+  if (btnStart) btnStart.disabled = false;
+  if (btnCancel) btnCancel.style.display = 'none';
+}
+
+function startRec(label) {
+  recLabel    = label;
+  recDuration = duration;
+  send({ cmd: 'calibrate_start', label, n_people: nPeople, duration });
+}
+function stopRec()  { send({ cmd: 'calibrate_stop' }); hideRecProgress(); recLabel = null; }
+function clearClass(label) { send({ cmd: 'clear_class', label }); }
+function trainModel() {
+  const btn = document.getElementById('train-btn');
+  const res = document.getElementById('train-result');
+  btn.disabled  = true; btn.textContent = '⏳ Обучение…';
+  res.textContent = ''; res.className = '';
+  send({ cmd: 'train' });
+}
+
+  function connect() {
+  ws = new WebSocket(WS_URL);
+    document.getElementById('st').textContent = 'подключение…';
+
+  ws.onopen  = () => {
+    dot.className = 'on';
+    document.getElementById('st').textContent = 'live';
+    document.getElementById('top-err').textContent = '';
+    _wsOpenMs = Date.now();
+    _lastCsiMs = 0;
+    _heightsEma64 = null;
+    _skelEma32 = null;
+    _prevRawForDelta = null;
+    send({ cmd: 'get_status' });
+  };
+    ws.onclose = () => {
+    dot.className = '';
+      document.getElementById('st').textContent = 'переподключение…';
+    _wsOpenMs = 0;
+    hideRecProgress();
+    hideLimbRecProgress();
+      setTimeout(connect, 2000);
+    };
+  ws.onerror = () => { document.getElementById('top-err').textContent = 'WS error · порт 8765'; };
+
+    ws.onmessage = (ev) => {
+      try {
+        const o = JSON.parse(ev.data);
+
+      // ── server-push status/ack messages ──
+      if (o.type === 'status' || o.type === 'calib_ack') {
+        updateCountsUI(o.n_samples);
+        if (o.limb_calib_counts) {
+          applyLimbCounts(o.limb_calib_counts);
+          renderLimbCountsGrid();
+        }
+        if (typeof o.has_limb_net === 'boolean') {
+          const lr = document.getElementById('limb-train-result');
+          if (lr) {
+            lr.textContent = o.has_limb_net
+              ? 'Модель зон загружена — в потоке softmax по 6 зонам.'
+              : 'После записи зон нажмите «Обучить модель зон».';
+          }
+        }
+        if (o.status === 'stopped' || o.status === 'cleared') {
+          hideRecProgress(); updatePersonProgress(null);
+          document.querySelectorAll('.pcfg-cal-rec').forEach(b => b.classList.remove('recording'));
+        }
+        if (o.status === 'cleared_all') {
+          hideRecProgress(); updatePersonProgress(null);
+          document.querySelectorAll('.pcfg-cal-rec').forEach(b => b.classList.remove('recording'));
+          document.getElementById('train-result').textContent = 'Данные сброшены';
+          document.getElementById('train-result').className   = 'err';
+        }
+        return;
+      }
+      if (o.type === 'limb_calib_ack') {
+        if (o.counts) {
+          applyLimbCounts(o.counts);
+          renderLimbCountsGrid();
+        }
+        if (o.status === 'bad_limb') {
+          if (document.getElementById('top-err')) {
+            document.getElementById('top-err').textContent = 'Сервер: неизвестная зона (limb).';
+          }
+          return;
+        }
+        if (o.status === 'started' && o.limb) {
+          limbRecTotalSec = typeof o.duration === 'number' ? o.duration : limbRecTotalSec;
+          _limbRecLimbKey = o.limb;
+          showLimbRecProgress(o.limb, limbRecTotalSec, limbRecTotalSec);
+          clearLimbRecTimer();
+          const t0 = Date.now();
+          const total = limbRecTotalSec;
+          _limbRecTimer = setInterval(() => {
+            const elapsed = (Date.now() - t0) / 1000;
+            const rem = Math.max(0, total - elapsed);
+            showLimbRecProgress(_limbRecLimbKey, rem, total);
+            if (rem <= 0) clearLimbRecTimer();
+          }, 150);
+        }
+        if (o.status === 'stopped') hideLimbRecProgress();
+        if (o.status === 'trained' || o.status === 'train_fail') {
+          clearLimbTrainTimer();
+          const lr = document.getElementById('limb-train-result');
+          if (lr) {
+            lr.textContent = o.message || (o.status === 'trained' ? 'Готово.' : 'Ошибка обучения.');
+            lr.style.color = o.status === 'train_fail' ? '#e85a5a' : '';
+          }
+        } else if (typeof o.has_limb_net === 'boolean') {
+          const lr = document.getElementById('limb-train-result');
+          if (lr && (o.status === 'started' || o.status === 'stopped')) {
+            lr.textContent = o.has_limb_net
+              ? 'Модель зон в памяти сервера.'
+              : 'После записи зон нажмите «Обучить модель зон».';
+            lr.style.color = '';
+          }
+        }
+        return;
+      }
+      if (o.type === 'train_result') {
+        const btn = document.getElementById('train-btn');
+        const res = document.getElementById('train-result');
+        btn.disabled = false; btn.textContent = '▶ Обучить модель';
+        res.textContent = o.message;
+        res.className   = o.success ? 'ok' : 'err';
+        updateCountsUI(o.n_samples);
+        return;
+      }
+
+      // ── regular CSI data packet ──
+      const heights  = heightsFromCsiPacket(o);
+      const skeleton = (o.viz && o.viz.skeleton) || o.skeleton;
+      const rssi = o.raw != null ? o.raw.rssi : o.rssi;
+      const ts   = o.raw != null ? o.raw.ts   : o.ts;
+      // Второй ESP: сервер шлёт csi_primary:false — не перезатираем сцену/скелет «чужим» кадром
+      const isSecondaryStream = typeof o.csi_primary === 'boolean' && o.csi_primary === false && o.udp_src;
+
+      if (heights && heights.length >= 64) {
+        _lastCsiMs = Date.now();
+        const te = document.getElementById('top-err');
+        if (te && te.textContent && te.textContent.indexOf('Нет потока CSI') === 0) te.textContent = '';
+      }
+
+      if (!isSecondaryStream) {
+      if (heights && heights.length >= 64) {
+        const hVis = smoothHeightsEma(heights);
+        updateCSI(hVis, heights);
+      }
+
+      // Энергия движения
+      const rawMotion = typeof o.motion === 'number' ? o.motion : 0;
+      _motionE = _motionE * 0.7 + rawMotion * 0.3;
+
+      // Жизненные показатели
+      if (o.vitals) _lastVitals = o.vitals;
+
+      if (typeof o.height_estimate_cm === 'number' && Number.isFinite(o.height_estimate_cm)) {
+        _lastHeightEst = Math.round(Math.min(220, Math.max(100, o.height_estimate_cm)));
+      } else if (skeleton && skeleton.length >= 32) {
+        _lastHeightEst = estimateHeightFromSkeleton(skeleton);
+      }
+
+      // Карта комнаты — сохраняем последние scores, grid обновляется при ходьбе
+      if (o.room_map && o.room_map.scores) {
+        _lastRoomMap = o.room_map.scores;
+        updateRoomMap(o.room_map.scores); // точки-хитмэп тоже обновляем
+      }
+      if (o.limb_calib_counts) {
+        applyLimbCounts(o.limb_calib_counts);
+        renderLimbCountsGrid();
+      }
+      if (o.limb_calib_status) {
+        const ls = o.limb_calib_status;
+        if (ls.counts) {
+          applyLimbCounts(ls.counts);
+          renderLimbCountsGrid();
+        }
+        if (ls.recording) {
+          clearLimbRecTimer();
+          showLimbRecProgress(ls.limb, ls.remaining, limbRecTotalSec || 20);
+        } else if (ls.done) {
+          hideLimbRecProgress();
+        }
+      }
+
+      const limbSm = smoothLimbMatchScores(o.limb_match_scores || null);
+      const skUse = skeleton && skeleton.length >= 32 ? smoothSkeletonEma(skeleton) : skeleton;
+      updateSkelTargets(skUse, o.activity || null, limbSm);
+      renderActivityHUD(o.activity || null, limbSm, o.limb_match_source || null);
+
+      document.getElementById('rssi').textContent = rssi != null ? rssi : '—';
+      document.getElementById('ts').textContent   = ts   != null ? ts   : '—';
+      } // !isSecondaryStream
+
+      // calibration progress from embedded calib_status
+      if (o.calib_status) {
+        const cs = o.calib_status;
+        updateCountsUI(cs.n_samples);
+        updatePersonProgress(cs.recording ? cs : null);
+        if (cs.recording) {
+          showRecProgress(cs.label, cs.remaining, recDuration);
+        } else if (cs.done) {
+          hideRecProgress();
+          updatePersonProgress(null);
+          recPersonIdx = -1;
+          recLabel = null;
+        }
+      }
+    } catch (e) {
+      if (!window.__map3dWsErr) { window.__map3dWsErr = true; console.warn('map3d: ошибка в обработчике WS (часто невалидный JSON с сервера)', e); }
+    }
+  };
+}
+
+  setInterval(() => {
+    const te = document.getElementById('top-err');
+    if (!ws || ws.readyState !== 1 || !te) return;
+    if (te.textContent && (te.textContent.includes('WS error') || te.textContent.includes('Нет WebSocket'))) return;
+    const now = Date.now();
+    if (_wsOpenMs && now - _wsOpenMs > 5000 && (now - _lastCsiMs > 4500)) {
+      te.textContent = 'WebSocket OK, но нет кадров CSI: на ПК не приходят UDP от ESP (в терминале nn_pipeline должны быть строки «📦 Первый пакет…» / «📊 UDP»). Проверьте IP ноутбука и порт 8080 или 5555 в настройках ESP, файрвол (sudo ufw allow 8080/udp; sudo ufw allow 5555/udp), Wi‑Fi. Пинг ≠ UDP.';
+    }
+  }, 2500);
+
+  (function map3dBuildStamp() {
+    const v = 'snappier-skel-2026';
+    const el = document.getElementById('map3d-build-tag');
+    if (el) el.textContent = ' · ' + v;
+    console.info('[map3d] UI build:', v);
+})();
+
+  connect();
+  </script>
+</body>
+</html>
