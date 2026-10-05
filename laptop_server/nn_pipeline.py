@@ -12,6 +12,7 @@ import collections
 from typing import Any
 
 import csi_packet
+from presence import PresenceDetector
 
 # ── КОНФИГУРАЦИЯ ──────────────────────────────────────────────────────────────
 UDP_IP   = "0.0.0.0"
@@ -84,17 +85,13 @@ def _udp_payload_to_json(parsed: dict) -> str:
     return json.dumps(clean, default=_json_default_udp, ensure_ascii=False, allow_nan=False)
 
 
-def _udp_drain_per_source_latest(sock: socket.socket, data: bytes, addr) -> list[tuple[bytes, object]]:
-    """
-    Сбрасывает очередь датаграмм в сокете, для каждого IP отправителя оставляет последний кадр.
-    Нужно при нескольких ESP на одном порту — иначе потоки перемешиваются в один «последний» пакет.
-    """
-    latest: dict[str, tuple[bytes, object]] = {}
-    latest[addr[0]] = (data, addr)
+def _udp_drain_all(sock: socket.socket, data: bytes, addr) -> list[tuple[bytes, object]]:
+    """Сбрасывает очередь датаграмм в сокете: все накопившиеся пакеты по порядку."""
+    batch: list[tuple[bytes, object]] = [(data, addr)]
     while True:
         try:
             d, a = sock.recvfrom(65535)
-            latest[a[0]] = (d, a)
+            batch.append((d, a))
         except BlockingIOError as e:
             if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                 break
@@ -103,7 +100,7 @@ def _udp_drain_per_source_latest(sock: socket.socket, data: bytes, addr) -> list
             if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                 break
             raise
-    return list(latest.values())
+    return batch
 
 
 def _should_apply_udp_side_effects(source_ip: str | None) -> bool:
@@ -166,6 +163,9 @@ def load_ml_model():
 
 ml_weights = load_ml_model()
 _W_MATRIX = None
+# model-q*.bin — 4-битные веса другой модели (энкодер 8→128), прочитанные как float32: «поза» из них —
+# мусор порядка 1e35. Скелет из CSI считаем только по матрице, обученной с камеры (camera_calib.html).
+_W_FROM_CAMERA = False
 _W_MATRIX_BIN: np.ndarray | None = None  # копия из model-q*.bin — откат после камеры
 CAMERA_POSE_W_PATH = os.path.join(_HERE, "models", "camera_pose_W.npz")
 
@@ -218,7 +218,7 @@ class CameraPoseCalibrationManager:
         self._load_w()
 
     def _load_w(self) -> None:
-        global _W_MATRIX
+        global _W_MATRIX, _W_FROM_CAMERA
         if not os.path.exists(CAMERA_POSE_W_PATH):
             return
         try:
@@ -226,6 +226,7 @@ class CameraPoseCalibrationManager:
             W = d.get("W")
             if W is not None and isinstance(W, np.ndarray) and W.shape == (64, 32):
                 _W_MATRIX = W.astype(np.float32)
+                _W_FROM_CAMERA = True
                 n = int(d["n_samples"]) if "n_samples" in d.files else 0
                 print(f"✅ Загружена позовая матрица с камеры ({CAMERA_POSE_W_PATH}, {n} сэмплов при обучении)")
         except Exception as e:
@@ -269,7 +270,7 @@ class CameraPoseCalibrationManager:
         return ok, f"В запросе {n_in} сэмплов, принято +{ok} (всего {self.n_samples})"
 
     def train(self) -> tuple[bool, str]:
-        global _W_MATRIX
+        global _W_MATRIX, _W_FROM_CAMERA
         n = len(self.rows_x)
         if n < 96:
             return False, f"Мало пар CSI–поза: {n} (нужно ≥ 96 для устойчивого МНК)"
@@ -293,6 +294,7 @@ class CameraPoseCalibrationManager:
         if W.shape != (64, 32):
             return False, "неверная форма W"
         _W_MATRIX = W.astype(np.float32)
+        _W_FROM_CAMERA = True
         os.makedirs(os.path.dirname(CAMERA_POSE_W_PATH), exist_ok=True)
         np.savez(CAMERA_POSE_W_PATH, W=_W_MATRIX, n_samples=n)
         err = float(np.mean((X @ _W_MATRIX - Y) ** 2))
@@ -306,10 +308,11 @@ class CameraPoseCalibrationManager:
         return True, msg
 
     def revert_to_bundled_model(self) -> bool:
-        global _W_MATRIX
+        global _W_MATRIX, _W_FROM_CAMERA
         if _W_MATRIX_BIN is None:
             return False
         _W_MATRIX = _W_MATRIX_BIN.copy()
+        _W_FROM_CAMERA = False
         if os.path.exists(CAMERA_POSE_W_PATH):
             try:
                 os.remove(CAMERA_POSE_W_PATH)
@@ -440,10 +443,17 @@ def activity_hb_for_weights(W_act: np.ndarray, heights: list) -> np.ndarray:
 
 
 ACT_MODEL_PATH = os.path.join(_HERE, "models", "activity_model.npz")
+PRESENCE_CALIB_PATH = os.path.join(_HERE, "models", "presence_calib.json")
+
+# Детектор присутствия по всем линиям (presence.py). После калибровки пустой комнаты его решение
+# (пусто / движение / неподвижен) заменяет старый классификатор активности в поле activity.
+presence = PresenceDetector(calib_path=PRESENCE_CALIB_PATH)
 LIMB_CALIB_PATH = os.path.join(_HERE, "models", "limb_calib.npz")
 
 # Классификатор сцен (пусто / спят / сидят / стоят / ходят) → WebSocket для HUD и демо.
-USE_ACTIVITY_CLASSIFIER = True
+# Старая модель обучена на прошивке до RUV2 — по умолчанию выключена, состояние даёт детектор присутствия.
+# Включить: RUVIEW_OLD_ACTIVITY=1
+USE_ACTIVITY_CLASSIFIER = os.environ.get("RUVIEW_OLD_ACTIVITY", "0").strip().lower() in ("1", "true", "yes")
 
 # Сопоставление текущего CSI с эталонами зон из limb_calib.npz (центроиды записей).
 USE_LIMB_CALIB_MATCH = True
@@ -1194,7 +1204,7 @@ def process_csi(amps, rssi, ts):
     inp[: min(64, len(a))] = a[:64]
     mx   = float(np.max(np.abs(inp))) + 1e-6
     norm = inp / mx
-    skel = np.dot(norm, _W_MATRIX).tolist() if _W_MATRIX is not None else []
+    skel = np.dot(norm, _W_MATRIX).tolist() if _W_MATRIX is not None and _W_FROM_CAMERA else []
     if skel and len(skel) >= 32:
         probs, _src = limb_cal.limb_scores_for_frame(norm.tolist())
         if probs is not None:
@@ -1226,7 +1236,7 @@ def parse_ruview_packet(data: bytes, *, source_ip: str | None = None) -> dict | 
             _store_csi_frame(source_ip, heights)
 
         skeleton = []
-        if _W_MATRIX is not None:
+        if _W_MATRIX is not None and _W_FROM_CAMERA:
             try:
                 skeleton = np.dot(norm, _W_MATRIX).tolist()
             except Exception as e:
@@ -1265,6 +1275,10 @@ def parse_ruview_packet(data: bytes, *, source_ip: str | None = None) -> dict | 
                     activity = calib.predict(heights)
             else:
                 activity = calib.predict(heights)
+
+        presence_act = presence.activity()
+        if presence_act is not None:
+            activity = presence_act
 
         # Калибровочная запись
         calib_status = None
@@ -1553,6 +1567,17 @@ async def handle_cmd(cmd: dict, ws):
             "message": "Снова веса из model-q*.bin" if ok else "Нет базовой матрицы",
         }))
 
+    elif action == "presence_calibrate":
+        seconds = max(30, min(300, int(cmd.get("seconds", 60))))
+        delay = max(0, min(60, int(cmd.get("delay", 15))))
+        presence.start_calibration(seconds, time.time(), delay=delay)
+        print(f"🧭 Калибровка присутствия: через {delay} с, длительность {seconds} с — комната должна быть пуста")
+        await _broadcast_json({"type": "presence_ack", "status": "started", "seconds": seconds, "delay": delay})
+
+    elif action == "presence_cancel":
+        presence.cancel_calibration()
+        await _broadcast_json({"type": "presence_ack", "status": "cancelled"})
+
     elif action == "get_status":
         await ws.send(json.dumps({
             "type":               "status",
@@ -1564,7 +1589,10 @@ async def handle_cmd(cmd: dict, ws):
             "has_camera_pose_w":  os.path.exists(CAMERA_POSE_W_PATH),
             "csi_primary_ip":     _sticky_primary_udp_ip,
             "csi_primary_env":    CSI_PRIMARY_IP or None,
+            "presence_calibrated": presence.calibrated,
         }))
+        if presence.last:
+            await ws.send(_udp_payload_to_json(presence.last))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1581,9 +1609,20 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
     while True:
         try:
             data, addr = await loop.sock_recvfrom(sock, 65535)
-            batch = _udp_drain_per_source_latest(sock, data, addr)
+            everything = _udp_drain_all(sock, data, addr)
             now = time.monotonic()
-            pkt_count += len(batch)
+            t_wall = time.time()
+            pkt_count += len(everything)
+
+            latest: dict[str, tuple[bytes, object]] = {}
+            for d, a in everything:
+                fr = csi_packet.parse(d)
+                if fr is None:
+                    continue
+                presence.add(a[0], fr, t_wall)
+                if not fr.from_node:
+                    latest[a[0]] = (d, a)
+            batch = list(latest.values())
 
             for data, addr in sorted(
                 batch,
@@ -1708,10 +1747,32 @@ async def ws_handler(websocket):
         connected_clients.discard(websocket)
 
 
+async def _broadcast_json(obj: dict) -> None:
+    if not connected_clients:
+        return
+    msg = _udp_payload_to_json(obj)
+    await asyncio.gather(*[c.send(msg) for c in list(connected_clients)], return_exceptions=True)
+
+
+async def presence_loop():
+    """Раз в секунду: решение детектора присутствия → все клиенты WebSocket и лог при смене."""
+    prev_state = None
+    while True:
+        st = presence.tick(time.time())
+        if st:
+            if st["state"] != prev_state:
+                print(f"🧍 Присутствие: {st['state_ru']}")
+                prev_state = st["state"]
+            if "calibration_result" in st:
+                print(f"🧭 {st['calibration_result']}")
+            await _broadcast_json(st)
+        await asyncio.sleep(0.2)
+
+
 async def main():
     # большие JSON-пакеты с сотнями пар CSI+поза
     async with websockets.serve(ws_handler, "0.0.0.0", WS_PORT, max_size=16 * 1024 * 1024):
-        await udp_listener()
+        await asyncio.gather(udp_listener(), presence_loop())
 
 
 if __name__ == "__main__":
