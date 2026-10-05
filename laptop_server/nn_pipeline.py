@@ -1574,6 +1574,16 @@ async def handle_cmd(cmd: dict, ws):
         print(f"🧭 Калибровка присутствия: через {delay} с, длительность {seconds} с — комната должна быть пуста")
         await _broadcast_json({"type": "presence_ack", "status": "started", "seconds": seconds, "delay": delay})
 
+    elif action == "presence_rebaseline":
+        if not presence.calibrated:
+            await ws.send(json.dumps({"type": "presence_ack", "status": "need_calibration"}))
+            return
+        seconds = max(10, min(60, int(cmd.get("seconds", 15))))
+        delay = max(0, min(60, int(cmd.get("delay", 15))))
+        presence.start_calibration(seconds, time.time(), delay=delay, profile_only=True)
+        print(f"🧭 Обновление эталона: через {delay} с, длительность {seconds} с — комната должна быть пуста")
+        await _broadcast_json({"type": "presence_ack", "status": "rebaseline_started", "seconds": seconds, "delay": delay})
+
     elif action == "presence_cancel":
         presence.cancel_calibration()
         await _broadcast_json({"type": "presence_ack", "status": "cancelled"})
@@ -1765,6 +1775,8 @@ async def presence_loop():
                 prev_state = st["state"]
             if "calibration_result" in st:
                 print(f"🧭 {st['calibration_result']}")
+            if "rebaseline" in st:
+                print(f"🧭 {st['rebaseline']}")
             await _broadcast_json(st)
         await asyncio.sleep(0.2)
 

@@ -22,6 +22,8 @@ static uint32_t g_lastConnectAttemptMs = 0;
 static const uint32_t kFirstConnectTimeoutMs = 30000;
 /** Если связь пропала и автопереподключение не справилось — повторяем WiFi.begin() с таким интервалом. */
 static const uint32_t kReconnectIntervalMs = 15000;
+/** Сколько держать BOOT для сброса Wi-Fi. */
+static const uint32_t kResetHoldMs = 5000;
 
 void ruviewRequestRestart(uint32_t delayMs) {
   g_restartAtMs = millis() + delayMs;
@@ -49,7 +51,7 @@ static void printRuviewStatus() {
   } else {
     Serial.printf("Mode: STA, нет связи с \"%s\" — переподключаюсь\n", g_cfg.ssid);
   }
-  Serial.println(F("Сброс Wi-Fi: удерживать BOOT при включении ~3 с"));
+  Serial.println(F("Сброс Wi-Fi: держать BOOT 5 с во время работы"));
   Serial.println(F("-------------------------"));
   Serial.flush();
 }
@@ -69,22 +71,39 @@ static void applyEuCountry() {
   }
 }
 
-/** BOOT удерживается при старте ~3 с → true. */
-static bool resetButtonHeld() {
-  pinMode(RUVIEW_RESET_PIN, INPUT_PULLUP);
-  delay(10);
+/*
+ * Сброс Wi-Fi — долгое нажатие BOOT во время работы. Зажатая в момент включения или RESET,
+ * кнопка BOOT (GPIO0) переводит чип в режим загрузки прошивки, и программа вообще не стартует.
+ */
+static void pollResetButton(uint32_t now) {
+  static uint32_t pressedAt = 0;
+  static uint32_t reportedSec = 0;
   if (digitalRead(RUVIEW_RESET_PIN) != LOW) {
-    return false;
-  }
-  Serial.println(F("[RuView] BOOT нажата — держите 3 с для сброса Wi-Fi"));
-  uint32_t t0 = millis();
-  while (millis() - t0 < 3000) {
-    if (digitalRead(RUVIEW_RESET_PIN) != LOW) {
-      return false;
+    if (pressedAt) {
+      Serial.println(F("[RuView] BOOT отпущена — сброс отменён"));
     }
-    delay(20);
+    pressedAt = 0;
+    return;
   }
-  return true;
+  if (!pressedAt) {
+    pressedAt = now ? now : 1;
+    reportedSec = 0;
+    Serial.printf("[RuView] BOOT нажата — держите %u с для сброса Wi-Fi\n", (unsigned)(kResetHoldMs / 1000));
+    return;
+  }
+  const uint32_t held = now - pressedAt;
+  if (held >= kResetHoldMs) {
+    Serial.println(F("[RuView] Сброс настроек Wi-Fi → RuView_Setup"));
+    Serial.flush();
+    ruviewClearConfig();
+    delay(200);
+    ESP.restart();
+  }
+  const uint32_t sec = held / 1000;
+  if (sec != reportedSec) {
+    reportedSec = sec;
+    Serial.printf("[RuView] сброс через %u с\n", (unsigned)((kResetHoldMs - held + 999) / 1000));
+  }
 }
 
 static void startApProvisioning() {
@@ -181,11 +200,7 @@ void setup() {
   Serial.println(F("RuView Ultimate — ESP32-S3"));
   Serial.flush();
 
-  if (resetButtonHeld()) {
-    Serial.println(F("[RuView] Сброс настроек Wi-Fi"));
-    ruviewClearConfig();
-  }
-
+  pinMode(RUVIEW_RESET_PIN, INPUT_PULLUP);
   ruviewLoadConfig();
 
   if (!g_cfg.provisioned || g_cfg.ssid[0] == '\0') {
@@ -210,6 +225,7 @@ void loop() {
   if (g_restartAtMs && (int32_t)(now - g_restartAtMs) >= 0) {
     ESP.restart();
   }
+  pollResetButton(now);
 
   if (g_apMode) {
     g_dns.processNextRequest();

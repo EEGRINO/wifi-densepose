@@ -141,7 +141,7 @@ static void handleProvisionBody(AsyncWebServerRequest *request, uint8_t *data, s
   if (index + len < total) {
     return;
   }
-  /* В рабочем режиме смена Wi-Fi по сети запрещена: только через RuView_Setup (BOOT при включении). */
+  /* В рабочем режиме смена Wi-Fi по сети запрещена: только через RuView_Setup (BOOT 5 с во время работы). */
   if (!s_apMode) {
     request->send(403, "application/json", "{\"ok\":false,\"err\":\"provision only in setup mode\"}");
     return;

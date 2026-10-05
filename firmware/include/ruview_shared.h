@@ -17,7 +17,7 @@
 #define RUVIEW_BEACON_HZ_DEFAULT 100
 /** Сколько источников CSI помнит узел: роутер + узлы RuView. */
 #define RUVIEW_MAX_SOURCES 16
-/** Кнопка BOOT: удерживать при включении ~3 с — сброс Wi-Fi и режим RuView_Setup. */
+/** Кнопка BOOT: держать 5 с во время работы — сброс Wi-Fi и режим RuView_Setup (не при включении: это режим прошивки). */
 #define RUVIEW_RESET_PIN 0
 
 struct RuViewConfig {

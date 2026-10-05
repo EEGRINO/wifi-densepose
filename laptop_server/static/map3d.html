@@ -532,6 +532,7 @@
       border: 1px solid var(--border); background: var(--surface); color: var(--text);
     }
     .pp-cal button { flex: 1; }
+    .pp-cal button:disabled { opacity: .45; cursor: default; }
     .pp-cal button:hover { border-color: var(--accent); color: var(--accent); }
     #pp-cal-msg { margin-top: 6px; min-height: 13px; }
 
@@ -806,6 +807,9 @@
         <select id="pp-cal-sec" title="Длительность записи пустой комнаты">
           <option value="30">30 с</option><option value="60" selected>60 с</option><option value="120">120 с</option>
         </select>
+      </div>
+      <div class="pp-cal">
+        <button id="pp-rebase-btn" title="Сдвинули стул, оставили сумку? Пороги остаются, обновляется только эталон пустой комнаты (15 с)">↻ Обновить эталон (15 с)</button>
       </div>
       <div id="pp-cal-msg"></div>
     </div>
@@ -3522,6 +3526,11 @@ function _ppBeep(times = 1, freq = 880) {
 
 function _ppMsg(text) { document.getElementById('pp-cal-msg').textContent = text || ''; }
 
+function _ppClock(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+}
+
 function _ppShort(name) {          // "192.168.31.61 ← узел 75BC" → ".61 ← узел 75BC"
   const parts = String(name).split(' ← ');
   return parts.length === 2 ? '.' + parts[0].split('.').pop() + ' ← ' + parts[1] : name;
@@ -3541,11 +3550,16 @@ function renderPresence(p) {
   let sub = '';
   const cal = p.calibration;
   if (p.state === 'calibrating' && cal) {
+    const what = cal.profile_only ? 'Обновление эталона' : 'Запись пустой комнаты';
     sub = cal.phase === 'waiting'
-      ? `Выйдите из комнаты — запись через ${Math.ceil(cal.left_s)} с`
-      : `Запись пустой комнаты — ещё ${Math.ceil(cal.left_s)} с, не входите`;
+      ? `Выйдите из комнаты — ${what.toLowerCase()} через ${Math.ceil(cal.left_s)} с`
+      : `${what} — ещё ${Math.ceil(cal.left_s)} с, не входите`;
   } else if (p.state === 'uncalibrated') {
     sub = 'Нажмите «Калибровка» и выйдите из комнаты';
+  } else if (p.state === 'still' && p.suggest_rebaseline) {
+    const left = Math.max(0, p.auto_rebaseline_in_s || 0);
+    sub = `без движения ${_ppClock(p.quiet_s)} · если в комнате никого — «Обновить эталон»` +
+          (p.auto_rebaseline_in_s != null ? ` (сам через ${_ppClock(left)})` : '');
   } else if (p.active_links != null) {
     sub = `линий: ${p.active_links} · неподвижного ищем по: ${p.profile_source}`;
   }
@@ -3562,8 +3576,10 @@ function renderPresence(p) {
   const prevCal = _ppPrev && _ppPrev.state === 'calibrating' ? _ppPrev.calibration : null;
   if (cal && prevCal && prevCal.phase === 'waiting' && cal.phase === 'collecting') _ppBeep(1, 660);
   if (p.calibration_result) { _ppBeep(2, 990); _ppMsg(p.calibration_result); }
-  document.getElementById('pp-cal-btn').textContent =
-    p.state === 'calibrating' ? '✕ Отменить калибровку' : '🧭 Калибровка пустой комнаты';
+  if (p.rebaseline) _ppMsg(p.rebaseline);
+  const busy = p.state === 'calibrating';
+  document.getElementById('pp-cal-btn').textContent = busy ? '✕ Отменить' : '🧭 Калибровка пустой комнаты';
+  document.getElementById('pp-rebase-btn').disabled = busy || p.state === 'uncalibrated';
   _ppPrev = p;
 }
 
@@ -3572,6 +3588,11 @@ document.getElementById('pp-cal-btn').addEventListener('click', () => {
   if (_ppPrev && _ppPrev.state === 'calibrating') { send({ cmd: 'presence_cancel' }); return; }
   const seconds = parseInt(document.getElementById('pp-cal-sec').value, 10) || 60;
   send({ cmd: 'presence_calibrate', seconds, delay: 15 });
+});
+
+document.getElementById('pp-rebase-btn').addEventListener('click', () => {
+  _ppBeep(1, 520);
+  send({ cmd: 'presence_rebaseline', seconds: 15, delay: 15 });
 });
 
   function connect() {
@@ -3606,7 +3627,9 @@ document.getElementById('pp-cal-btn').addEventListener('click', () => {
       if (o.type === 'presence') { renderPresence(o); return; }
       if (o.type === 'presence_ack') {
         if (o.status === 'started') _ppMsg(`Калибровка: выйдите из комнаты, запись начнётся через ${o.delay} с`);
-        if (o.status === 'cancelled') _ppMsg('Калибровка отменена');
+        if (o.status === 'cancelled') _ppMsg('Отменено');
+        if (o.status === 'rebaseline_started') _ppMsg(`Обновление эталона: выйдите из комнаты, запись через ${o.delay} с`);
+        if (o.status === 'need_calibration') _ppMsg('Сначала сделайте полную калибровку');
         return;
       }
 
