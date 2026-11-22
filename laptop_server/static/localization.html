@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RuView — положение в комнате</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#09111d;color:#e6eef8}
+*{box-sizing:border-box}body{margin:0;padding:24px;max-width:1380px;margin-inline:auto}
+h1{font-size:26px;margin:0 0 8px}h2{font-size:18px;margin:0 0 16px}p{line-height:1.55}
+.muted{color:#a3b5ca;font-size:14px}header{margin-bottom:22px}
+a{color:#72cbff}main{display:grid;grid-template-columns:minmax(350px,1.7fr) minmax(320px,1fr);gap:18px}
+.card{padding:20px;border:1px solid #2a3b51;border-radius:14px;background:#101d2d;margin-bottom:16px}
+.inputs{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{display:grid;gap:5px;font-size:13px;color:#b5c6da}
+input,select,button{font:inherit;border-radius:7px;border:1px solid #3c516b;padding:10px;background:#14263c;color:#eef4fc}
+input{width:95px}button{cursor:pointer}button:hover{border-color:#71cfff}button.primary{background:#16668b;border-color:#3094bd}
+button:disabled{opacity:.45;cursor:not-allowed}.stack{display:grid;gap:12px}.row{display:flex;flex-wrap:wrap;gap:8px}
+svg{width:100%;height:490px;display:block;touch-action:manipulation;background:#091521;border-radius:9px}
+#map[data-editing=true]{touch-action:none}#map [data-plan-kind]{cursor:grab}#map [data-plan-kind=wall]{cursor:pointer}
+#map [data-plan-kind]:focus-visible{stroke:white;stroke-width:3px}#roomTools{margin:12px 0}
+#roomEditError{color:#ffaaa3}#roomEditError:empty{display:none}
+#map[data-drawing=true]{cursor:crosshair}
+.room-draw-actions{margin:8px 0}
+.snap-option{display:flex;align-items:center;gap:7px;margin:10px 0}
+.snap-option input{width:auto}
+#planSettings{margin-top:16px}#planSettings summary{cursor:pointer;color:#b5d6ee;margin-bottom:12px}
+#map [data-snap-guide]{pointer-events:none}
+.badge{display:inline-block;border-radius:20px;background:#20334b;padding:5px 12px;font-size:13px;margin-right:8px}
+#estimate{font-size:23px;color:#6fe5d1;font-weight:650}#timer{font-size:26px;color:#ffc16c}
+#estimate[data-state=model_unreliable],#estimate[data-state=poor_signal]{color:#ffb96b}#error{color:#ffaaa3;white-space:pre-line}#notice{color:#bcd1e8;min-height:40px}td,th{padding:8px;text-align:left;border-bottom:1px solid #2a3b51;font-size:13px}
+table{border-collapse:collapse;width:100%}.scroll{max-height:270px;overflow:auto}
+#lines{font-size:12px;line-height:1.6;overflow-wrap:anywhere}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#65d9bb;margin-right:7px}
+@media(max-width:850px){main{grid-template-columns:1fr}body{padding:14px}svg{height:360px}}
+</style>
+<header>
+<h1>Положение человека в комнате</h1>
+<p class="muted">Один человек · CSI от двух ESP · обучение на записях в этой комнате.
+Точка — выбранное опорное место по сходству CSI, а не точные непрерывные координаты. Кошку на время записей уберите.</p>
+<span id="connection" class="badge">Подключение…</span><a href="map3d.html">Основной экран</a>
+</header>
+<div class="card">
+<h2>Набор записей</h2>
+<div class="inputs"><label>Эксперимент<select id="datasetSelect"></select></label><button id="openDataset">Открыть выбранный</button><button id="newDataset">Новый контроль A/B — сохранить прежние записи</button></div>
+<p id="datasetName" class="muted"></p>
+<p class="muted">Новый контроль создаёт отдельный набор с копией плана и мест устройств. Старые записи не удаляются.
+Расстановку, питание и канал во время серии не меняйте. Это проверка повторяемости двух мест, цель шести секторов сохраняется.</p>
+<div id="guideBox">
+<p id="guideStep"></p><button id="guideNext">Выбрать следующий шаг контроля</button>
+<p class="muted">Порядок обучения: Пусто → A → B → A → B → Пусто → A → B.
+A: X=1,00, Z=0,92 м; B: X=5,35, Z=0,72 м. Для «Пусто» выйдите; для A/B стойте в выбранном месте.
+После 8 записей обучите SVM и сделайте новые независимые проверки A, B и «Пусто».</p>
+</div></div>
+<main>
+<section>
+<div class="card">
+<h2>1. План и опорные точки</h2>
+<div class="row room-draw-actions">
+<button id="newRoom" class="primary" type="button" disabled>Новый план</button>
+<button id="editRoom" type="button" disabled>Редактировать план</button>
+</div>
+<div id="roomTools" hidden>
+<div id="drawRoomTools" hidden>
+<div class="inputs">
+<label>Ширина, м<input id="newPlanWidth" type="number" min="1" max="50" step="any" value="8"></label>
+<label>Глубина, м<input id="newPlanDepth" type="number" min="1" max="50" step="any" value="6"></label>
+<button id="rectangleRoom" type="button">Создать прямоугольник</button>
+</div>
+<div class="row room-draw-actions">
+<button id="undoRoomPoint" type="button">Убрать точку</button>
+<button id="closeRoomOutline" type="button">Замкнуть контур</button>
+</div>
+</div>
+<div id="shapeRoomTools">
+<div class="row">
+<button id="addCorner" type="button">Добавить угол</button>
+<button id="addBend" type="button">Добавить изгиб</button>
+<button id="addCutout" type="button">Добавить вырез / колонну</button>
+<button id="removeShape" type="button">Удалить выбранное</button>
+</div>
+</div>
+<label class="snap-option"><input id="snapPlan" type="checkbox" checked> Привязка по горизонтали и вертикали <span class="muted">Alt отключает на время</span></label>
+<p id="roomEditHint" class="muted"></p>
+<p id="roomEditSize" class="muted"></p>
+<p id="roomEditError" role="alert"></p>
+<div class="row">
+<button id="saveRoomEdit" class="primary" type="button">Сохранить изменения</button>
+<button id="cancelRoomEdit" type="button">Отмена</button>
+</div>
+</div>
+<svg id="map" role="group" aria-label="План комнаты, оборудование и оценка положения"></svg>
+<div id="planSelection">
+<p id="selected" class="muted">Сначала задайте реальные размеры комнаты.</p>
+<div class="inputs">
+<label>Точка человека X, м<input id="humanX" type="number" min="0" step=".001" placeholder="—"></label>
+<label>Точка человека Z, м<input id="humanZ" type="number" min="0" step=".001" placeholder="—"></label>
+<button id="selectCoordinates">Выбрать по координатам</button>
+</div>
+<div class="row"><button id="centerPoints">Выбрать центр следующего сектора</button><button id="selectEmpty">Выбрать «Пусто»</button></div>
+</div>
+<details id="planSettings"><summary>Размеры, секторы и оборудование</summary>
+<form id="roomForm" class="inputs">
+<label>Ширина X, м<input id="width" type="number" min="1" max="50" step="any" required placeholder="6.46"></label>
+<label>Глубина Z, м<input id="depth" type="number" min="1" max="50" step="any" required placeholder="2.87"></label>
+<label>Форма<select id="shape"><option value="curved">Изогнутая стена справа</option><option value="rectangle">Прямоугольник</option><option value="custom" id="customShape" hidden>Ручной контур</option></select></label>
+<label>Короткая стена, м<input id="short_width" type="number" min=".1" max="50" step=".01" value="4.04"></label>
+<label>Площадь по плану, м²<input id="declared_area" type="number" min=".1" step=".01" value="16.8"></label>
+<label>Сетка секторов<select id="sectorMode"><option value="auto">По размерам комнаты</option><option value="manual">Вручную</option></select></label>
+<label>Столбцы<input id="cols" type="number" min="1" max="10" value="3" required></label>
+<label>Строки<input id="rows" type="number" min="1" max="10" value="2" required></label>
+<button>Сохранить план</button>
+</form>
+<p class="muted"><span id="geometry"></span> Координаты X и Z отсчитываются от исходного нуля схемы. <span id="legacyPlanNote" hidden>Изогнутая стена справа приближена четвертью эллипса. Точное место входа на схеме не задано.</span></p>
+<div class="card" style="padding:12px;margin:12px 0">
+<div class="inputs">
+<label>Щелчок на схеме<select id="mapMode"><option value="person">Точка человека для записи</option><option value="router">Роутер</option><option value="esp1">ESP №1 · 75BC</option><option value="esp2">ESP №2 · 46D8</option></select></label>
+<label>X, м<input id="deviceX" type="number" min="0" step=".01" placeholder="—"></label>
+<label>Z, м<input id="deviceZ" type="number" min="0" step=".01" placeholder="—"></label>
+<label>Высота, м<input id="deviceHeight" type="number" min="0" max="10" step=".01" placeholder="не задана"></label>
+<button type="button" id="saveDevice">Сохранить устройство</button>
+<button type="button" id="removeDevice">Убрать метку</button>
+</div>
+<p class="muted" id="deviceHint">Выберите устройство и нажмите в его реальном месте на схеме. Щелчок сразу сохраняет метку. Координаты и высоту можно ввести вручную.</p>
+<div id="deviceSummary" class="muted"></div>
+<p class="muted">Фиолетовый квадрат — роутер; голубая точка — ESP №1; оранжевая — ESP №2.
+Пунктир показывает соединения между заданными местами, а не зону покрытия. После начала сбора расстановка закрепляется за записями.</p>
+</div>
+</details>
+</div>
+<div class="card">
+<h2>4. Результат</h2>
+<div id="estimate">Нужны записи и обучение</div>
+<p id="accuracy" class="muted">Погрешность пока не измерена.</p>
+<p class="muted">Бирюзовая точка — оценка. Окружность после проверки показывает радиус,
+в который попало 90% ошибок на проверочных записях, а не гарантированную границу текущей ошибки.</p>
+<h2 style="margin-top:20px">Качество приёма</h2>
+<p id="qualitySummary" class="muted">Ожидание показателей…</p>
+<div class="scroll"><table><thead><tr><th>Линия</th><th>RSSI, дБм</th><th>Шум, дБм</th><th>SNR*, дБ</th><th>Кадры/с</th><th>Состояние</th></tr></thead><tbody id="qualityLines"></tbody></table></div>
+<div id="qualityReceivers" class="muted"></div>
+<p class="muted">* SNR — оценка RSSI минус шумовой порог ESP. Если шумовой порог недостоверен,
+SNR не показывается. Это не спектроанализатор: источник помех не определяется.
+Чистые показатели не гарантируют точную локализацию.</p>
+<p class="muted">Для повторяемых тестов: фиксированный канал 2,4 ГГц и полоса 20 МГц.
+Выбор свободного канала требует отдельного обследования эфира. Смена канала меняет условия набора данных.
+Роутер и ESP размещайте вдали от микроволновки и источников питания с помехами.</p>
+<div id="lines"></div>
+</div>
+</section>
+<aside>
+<div class="card">
+<h2>2. Запись примеров</h2>
+<div class="stack">
+<div id="abControls" hidden>
+<div class="row">
+<button id="abStart" type="button" disabled>Включить пробный A/B</button>
+<button id="abStop" type="button" disabled>Выключить A/B</button>
+</div>
+<p id="abStatus" class="muted" aria-live="polite"></p>
+</div>
+<p class="muted">Быстрая диагностика: кнопка задаёт место, назначение и время. Запись запускается отдельно. Исходные CSI-пакеты сохраняются для разбора ошибок.</p>
+<div class="stack">
+<button type="button" id="diagEmpty">Диагностика: Пусто</button>
+<button type="button" id="diagA">Диагностика: A</button>
+<button type="button" id="diagB">Диагностика: B</button>
+</div>
+<label>Назначение<select id="role"><option value="train">Обучение</option><option value="test">Независимая проверка</option><option value="diagnostic">Диагностика — без обучения</option></select></label>
+<div class="inputs">
+<label>Отсчёт, с<input id="delay" type="number" min="5" max="120" value="15"></label>
+<label>Запись, с<input id="seconds" type="number" min="10" max="180" value="20"></label>
+</div>
+<p class="muted">Для диагностики точки: встаньте в отмеченное место и стойте спокойно до конца записи.
+При повторе сохраняйте направление тела. Для «Пусто» выйдите до окончания отсчёта.
+Проверочные записи делайте позже, отдельными заходами.</p>
+<button id="record" class="primary">Начать запись выбранного места</button>
+<div class="row">
+<button id="visitA" type="button" disabled>Начать заход в A</button>
+<button id="visitB" type="button" disabled>Начать заход в B</button>
+</div>
+<p class="muted">Заход по секундомеру. До 0:30 выйдите, в 0:50 войдите, с 1:05 до 1:25 стойте в выбранной точке,
+затем выйдите и закройте дверь до 1:40. Запись закончится в 2:00.</p>
+<button id="cancel">Отменить текущую запись</button>
+<div id="timer"></div><div id="notice" aria-live="polite"></div><div id="error" role="alert"></div>
+</div>
+</div>
+<div class="card">
+<h2>3. Обучение и проверка</h2>
+<p class="muted">Минимум: по две отдельные обучающие записи в двух точках и две записи «Пусто».
+Лучше покрыть все сектора. Затем сделайте отдельные записи с назначением «Независимая проверка».
+Для проверки непрерывных координат добавьте места между обучающими точками.</p>
+<label style="margin-bottom:12px">Алгоритм<select id="algorithm"><option value="ridge">Линейный (текущий)</option><option value="svm">SVM RBF — эксперимент</option><option value="ridge_rssi">Ridge — только RSSI (контроль)</option><option value="ridge_csi_change">Ridge — изменение CSI от пустой комнаты</option></select></label>
+<p class="muted">Смена алгоритма применяется после «Обучить». Исходные записи сохраняются.
+Контроль RSSI использует уровень сигнала. «Изменение CSI» сравнивает форму CSI с обучающим эталоном пустой комнаты. Устойчивость каждого режима нужно проверить на новых записях.</p>
+<button id="train" class="primary">Обучить по записям</button>
+<p id="report" class="muted"></p>
+<p class="muted">После перезапуска записи сохраняются; нажмите «Обучить» для восстановления модели.
+«Зоны» на странице калибровки позы — части тела, они не используются здесь как сектора комнаты.</p>
+</div>
+<div class="card">
+<h2>Сохранённые сеансы</h2>
+<div class="scroll"><table><thead><tr><th>Место</th><th>Тип</th><th>Окон</th></tr></thead><tbody id="sessions"></tbody></table></div>
+</div>
+</aside>
+</main>
+<script src="room_editor.js"></script>
+<script>
+'use strict';
+let ws, state=null, selected=null, selectionReady=false, nextCenter=0, formLoaded=false, lastRoom='', lastDevices='', lastDataset='', lastDatasetList='', lastAlgorithm='';
+const $=id=>document.getElementById(id);
+const ns='http://www.w3.org/2000/svg';
+const plan=RoomPlan.editor({getState:()=>state,send,draw,refresh:()=>render(state),$});
+function send(cmd,extra={}) {
+ if(!ws || ws.readyState!==1){$('error').textContent='Нет соединения с сервером';return;}
+ $('error').textContent=''; ws.send(JSON.stringify({cmd,...extra}));
+}
+function svg(tag,attrs,text){
+ const e=document.createElementNS(ns,tag);
+ for(const [k,v] of Object.entries(attrs))e.setAttribute(k,String(v));
+ if(text!==undefined)e.textContent=text;
+ $('map').appendChild(e); return e;
+}
+function select(pos){selected=pos;selectionReady=true;$('humanX').value=pos?Number(pos[0].toFixed(3)):'';$('humanZ').value=pos?Number(pos[1].toFixed(3)):'';$('mapMode').value='person';refreshDeviceEditor();if(state)render(state);}
+function mapMode(){return $('mapMode').value||'person';}
+const equipment={router:{name:'Роутер',color:'#c299ff'},esp1:{name:'ESP №1 · 75BC',color:'#65cfff'},esp2:{name:'ESP №2 · 46D8',color:'#ffb96b'}};
+function refreshDeviceEditor(){
+ const key=mapMode(),device=state&&state.devices&&state.devices[key];
+ $('deviceX').value=device?device.position[0]:'';
+ $('deviceZ').value=device?device.position[1]:'';
+ $('deviceHeight').value=device&&device.height!==null?device.height:'';
+ const locked=!!(state&&(state.recording||state.sessions.length));
+ for(const id of ['deviceX','deviceZ','deviceHeight','saveDevice','removeDevice'])$(id).disabled=key==='person'||locked;
+ $('deviceHint').textContent=locked?'Расстановка закреплена за записями. Для физического перемещения оборудования нужен новый набор данных.':
+ key==='person'?'Щелчок выбирает место человека для записи. Для установки оборудования выберите устройство выше.':
+ 'Щелкните в реальном месте устройства — метка сохранится сразу. Высоту можно указать дополнительно.';
+}
+function sendDevice(x,z){
+ if(mapMode()==='person')return;
+ send('localization_device',{device:mapMode(),x,z,height:$('deviceHeight').value===''?null:Number($('deviceHeight').value)});
+}
+function edgeX(r,z) {
+ return r.shape==='curved'?r.short_width+(r.width-r.short_width)*Math.sqrt(Math.max(0,1-(z/r.depth)**2)):r.width;
+}
+function inside(r,x,z){
+ if(r.shape==='custom')return RoomPlan.contains(r,x,z);
+ return x>=0&&z>=0&&z<=r.depth&&x<=edgeX(r,z)+1e-9;
+}
+function roomPath(r){
+ if(r.shape==='custom')return RoomPlan.path(r);
+ if(r.shape!=='curved')return 'M0 0H'+r.width+'V'+r.depth+'H0Z';
+ return 'M0 0H'+r.width+' A'+(r.width-r.short_width)+' '+r.depth+' 0 0 1 '+r.short_width+' '+r.depth+' H0Z';
+}
+function sectorPosition(r,col,row){
+ if(r.shape==='custom')return RoomPlan.sectorPoint(r,col,row);
+ const w=r.width/r.cols,z=(row+.5)*r.depth/r.rows;
+ const left=col*w,right=Math.min(left+w,edgeX(r,z));
+ return right>left?[(left+right)/2,z]:null;
+}
+function draw(){
+ const s=state,r=plan.draft||s?.room,m=$('map');m.replaceChildren();
+ if(!r){$('selected').textContent='Сначала задайте реальные размеры комнаты.';return;}
+ const [x0,z0,x1,z1]=plan.drawing?[0,0,r.width,r.depth]:RoomPlan.bounds(r);
+ const [width,depth]=plan.draft?plan.dimensions(r):[x1-x0,z1-z0];
+ const pad=Math.max(width,depth,1)*(plan.draft ? .16 : .06);
+ const origin=plan.draft?[0,0]:[x0,z0];
+ m.setAttribute('viewBox',[origin[0]-pad,origin[1]-pad,width+2*pad,depth+2*pad].join(' '));
+ if(plan.drawing){plan.overlay(svg);return;}
+ const d=roomPath(r);
+ const defs=document.createElementNS(ns,'defs'),clip=document.createElementNS(ns,'clipPath'),outline=document.createElementNS(ns,'path');
+ clip.id='roomClip';outline.setAttribute('d',d);outline.setAttribute('clip-rule','evenodd');clip.appendChild(outline);defs.appendChild(clip);m.appendChild(defs);
+ svg('path',{d,'fill-rule':'evenodd',fill:'#132b40',stroke:'#53708b','stroke-width':.025});
+ for(let row=0;row<r.rows;row++)for(let col=0;col<r.cols;col++){
+  const w=(x1-x0)/r.cols,h=(z1-z0)/r.rows,x=x0+col*w,z=z0+row*h;
+  svg('rect',{x,y:z,width:w,height:h,fill:'none',stroke:'#365671','stroke-width':.016,'clip-path':'url(#roomClip)'});
+  const p=sectorPosition(r,col,row);
+  if(p)svg('text',{x:p[0],y:p[1],fill:'#a4bed8','font-size':Math.min(.2,Math.max(.09,Math.min(w,h)*.22)),
+   'text-anchor':'middle','dominant-baseline':'central'},(row+1)+':'+(col+1));
+ }
+ const devices=plan.fresh?{}:s.devices||{};
+ for(const pair of [['router','esp1'],['router','esp2'],['esp1','esp2']]){
+  const a=devices[pair[0]],b=devices[pair[1]];
+  if(a&&b)svg('line',{x1:a.position[0],y1:a.position[1],x2:b.position[0],y2:b.position[1],stroke:'#99b4cc','stroke-width':.018,'stroke-dasharray':'.07 .05',opacity:.45});
+ }
+ for(const [key,device] of Object.entries(devices)){
+  const info=equipment[key];if(!info)continue;
+  const [x,z]=device.position;
+  const marker=key==='router'?svg('rect',{x:x-.075,y:z-.075,width:.15,height:.15,fill:info.color,stroke:'#07111d','stroke-width':.025}):
+    svg('circle',{cx:x,cy:z,r:.075,fill:info.color,stroke:'#07111d','stroke-width':.025});
+  const title=document.createElementNS(ns,'title');title.textContent=info.name+' · X '+x.toFixed(2)+' м, Z '+z.toFixed(2)+' м'+(device.height===null?'':' · высота '+device.height+' м');marker.appendChild(title);
+  const right=x>r.width*.7;
+  svg('text',{x:x+(right?-.12:.12),y:Math.max(.16,Math.min(r.depth-.06,z-.12)),fill:info.color,'font-size':.14,'text-anchor':right?'end':'start',stroke:'#091521','stroke-width':.045,'paint-order':'stroke'},info.name);
+ }
+ if(plan.draft){plan.overlay(svg);return;}
+ const pts=new Map();
+ for(const item of s.sessions)if(item.position){
+  const p=item.position,key=p.join(',');
+  if(!pts.has(key))pts.set(key,{p,train:0,test:0,diagnostic:0});
+  pts.get(key)[item.role]++;
+ }
+ for(const a of pts.values()){
+  const c=svg('circle',{cx:a.p[0],cy:a.p[1],r:.06,fill:a.train?'#7badd2':a.test?'#ffbe70':'#c49cff'});
+  const t=document.createElementNS(ns,'title');t.textContent='Обучение: '+a.train+', проверка: '+a.test+', диагностика: '+a.diagnostic;c.appendChild(t);
+ }
+ if(selectionReady&&selected){
+  svg('circle',{cx:selected[0],cy:selected[1],r:.10,fill:'none',stroke:'#ffbe70','stroke-width':.025});
+ }
+ const e=s.estimate,report=s.report&&s.report.test;
+ if(e.state==='estimated'&&e.position&&inside(r,...e.position)){
+  if(e.mode!=='ab'&&report&&report.p90_error_m!==null)svg('circle',{cx:e.position[0],cy:e.position[1],r:report.p90_error_m,fill:'#51e7c4','fill-opacity':.08,stroke:'#51e7c4','stroke-opacity':.35,'stroke-width':.02,'clip-path':'url(#roomClip)'});
+  svg('circle',{cx:e.position[0],cy:e.position[1],r:.085,fill:'#51e7c4'});
+ }
+ $('selected').textContent=mapMode()!=='person'?'Режим размещения: '+equipment[mapMode()].name:!selectionReady?'Выберите точку на плане или «Пусто».':selected?'Выбрано: X='+selected[0].toFixed(2)+' м, Z='+selected[1].toFixed(2)+' м':'Выбрано: пустая комната';
+}
+$('map').addEventListener('click',ev=>{
+ if(plan.click(ev))return;
+ if(!state||!state.room)return;
+ const pt=$('map').createSVGPoint();pt.x=ev.clientX;pt.y=ev.clientY;
+ const p=pt.matrixTransform($('map').getScreenCTM().inverse()),r=state.room;
+ if(!inside(r,p.x,p.y)){$('error').textContent='Выберите место внутри комнаты';return;}
+ const point=[Math.round(p.x*100)/100,Math.round(p.y*100)/100];
+ if(mapMode()==='person')select(point);
+ else{
+  if(state.recording||state.sessions.length){$('error').textContent='Расстановка закреплена за записями';return;}
+  $('deviceX').value=point[0];$('deviceZ').value=point[1];sendDevice(...point);
+ }
+});
+function coordinates(){
+ if(!state||!state.room)return false;
+ if($('humanX').value===''||$('humanZ').value===''){$('error').textContent='Укажите X и Z';return false;}
+ const x=Number($('humanX').value),z=Number($('humanZ').value);
+ if(!Number.isFinite(x)||!Number.isFinite(z)||!inside(state.room,x,z)){$('error').textContent='Точка должна быть внутри комнаты';return false;}
+ select([x,z]);return true;
+}
+function prepareDiagnostic(point){
+ if(!state||!state.room||state.recording)return;
+ if(point&&!inside(state.room,...point)){$('error').textContent='Контрольная точка вне комнаты; выберите место вручную';return;}
+ $('error').textContent='';
+ $('role').value='diagnostic';$('delay').value='30';$('seconds').value=point?'30':'60';
+ select(point);
+}
+$('diagEmpty').onclick=()=>prepareDiagnostic(null);
+$('diagA').onclick=()=>prepareDiagnostic([1,.92]);
+$('diagB').onclick=()=>prepareDiagnostic([5.35,.72]);
+$('selectCoordinates').onclick=coordinates;
+$('newDataset').onclick=()=>send('localization_dataset_new');
+$('openDataset').onclick=()=>send('localization_dataset_open',{dataset_id:$('datasetSelect').value});
+$('guideNext').onclick=()=>{
+ if(!state||!state.dataset||state.dataset.id==='original'||state.recording)return;
+ const n=state.sessions.filter(s=>s.role==='train').length;
+ const points=[null,[1,.92],[5.35,.72],[1,.92],[5.35,.72],null,[1,.92],[5.35,.72]];
+ if(n>=points.length)return;
+ const p=points[n];
+ if(p&&!inside(state.room,...p)){$('error').textContent='Контрольные точки не подходят текущему плану';return;}
+ $('role').value='train';$('delay').value='15';$('seconds').value='20';select(p);
+};
+$('mapMode').onchange=()=>{refreshDeviceEditor();if(state)render(state);};
+$('saveDevice').onclick=()=>{
+ if($('deviceX').value===''||$('deviceZ').value===''){$('error').textContent='Укажите X и Z или нажмите на схему';return;}
+ sendDevice(Number($('deviceX').value),Number($('deviceZ').value));
+};
+$('removeDevice').onclick=()=>sendDevice(null,null);
+$('sectorMode').onchange=()=>{
+ const automatic=$('sectorMode').value==='auto';
+ $('cols').disabled=$('rows').disabled=automatic;
+};
+$('roomForm').onsubmit=ev=>{
+ ev.preventDefault();
+ const width=Number($('width').value),depth=Number($('depth').value),shape=$('shape').value;
+ const geometry=shape==='custom'&&state?.room?RoomPlan.payload(RoomPlan.scale(state.room,width,depth)):{};
+ send('localization_config',{width,depth,cols:Number($('cols').value),rows:Number($('rows').value),
+  shape,short_width:Number($('short_width').value),declared_area:$('declared_area').value?Number($('declared_area').value):null,
+  ...geometry,sector_mode:$('sectorMode').value||'manual',base_dataset_id:state?.dataset?.id});
+};
+$('centerPoints').onclick=()=>{
+ if(!state||!state.room)return;
+ const r=state.room;
+ for(let step=0;step<r.cols*r.rows;step++){
+  const i=nextCenter++%(r.cols*r.rows);
+  const p=sectorPosition(r,i%r.cols,Math.floor(i/r.cols));
+  if(p){select(p);return;}
+ }
+};
+$('selectEmpty').onclick=()=>select(null);
+$('record').onclick=()=>{
+ if(mapMode()==='person'&&($('humanX').value!==''||$('humanZ').value!=='')){
+  if(!coordinates())return;
+ }
+ if(!selectionReady){$('error').textContent='Выберите точку или «Пусто»';return;}
+ send('localization_record',{x:selected?selected[0]:null,z:selected?selected[1]:null,role:$('role').value,delay:Number($('delay').value),seconds:Number($('seconds').value)});
+};
+$('visitA').onclick=()=>send('localization_visit_a');
+$('visitB').onclick=()=>send('localization_visit_b');
+$('cancel').onclick=()=>send('localization_cancel');
+$('abStart').onclick=()=>send('localization_ab_start');
+$('abStop').onclick=()=>send('localization_ab_stop');
+$('train').onclick=()=>send('localization_train',{algorithm:$('algorithm').value||'ridge'});
+function render(s){
+ state=s;
+ plan.sync(s,ws?.readyState===1);
+ const dataset=s.dataset||{id:'original',name:'Первоначальные записи'};
+ if(dataset.id!==lastDataset){
+  if(lastDataset){selected=null;selectionReady=false;nextCenter=0;$('humanX').value='';$('humanZ').value='';lastAlgorithm='';}
+  lastDataset=dataset.id;
+ }
+ const datasetList=JSON.stringify(s.datasets||[]);
+ if(datasetList!==lastDatasetList){
+  lastDatasetList=datasetList;$('datasetSelect').replaceChildren();
+  for(const item of s.datasets||[]){
+   const option=document.createElement('option');option.value=item.id;option.textContent=item.name+' · '+item.recordings+' записей';$('datasetSelect').appendChild(option);
+  }
+  $('datasetSelect').value=dataset.id;
+ }
+ $('datasetName').textContent='Открыт: '+dataset.name+' · '+s.sessions.length+' записей';
+ $('newDataset').disabled=!!s.recording;$('openDataset').disabled=!!s.recording;
+ const control=dataset.id!=='original';
+ $('guideBox').hidden=false;
+ const step=s.sessions.filter(v=>v.role==='train').length;
+ $('guideStep').textContent=!control?'Чтобы начать, нажмите «Новый контроль A/B — сохранить прежние записи».':step<8?'Следующий обучающий шаг '+(step+1)+' из 8. Выберите его, затем нажмите «Начать запись».':'Обучающая серия собрана. Обучите выбранную модель, затем запишите A, B и «Пусто» с назначением «Независимая проверка».';
+ $('guideNext').disabled=!control||!!s.recording||step>=8;
+ if(s.room&&(!formLoaded||JSON.stringify(s.room)!==lastRoom)){
+  $('customShape').hidden=s.room.shape!=='custom';
+  $('legacyPlanNote').hidden=s.room.shape!=='curved';
+  if(selected&&!inside(s.room,...selected)){
+   selected=null;selectionReady=false;$('humanX').value='';$('humanZ').value='';
+  }
+  for(const k of ['cols','rows','shape'])$(k).value=s.room[k];
+  const [x0,z0,x1,z1]=RoomPlan.bounds(s.room);
+  $('width').value=Number((x1-x0).toFixed(8));
+  $('depth').value=Number((z1-z0).toFixed(8));
+  $('sectorMode').value=s.room.sector_mode||'manual';
+  $('sectorMode').onchange();
+  $('short_width').value=s.room.short_width||s.room.width;
+  $('declared_area').value=s.room.declared_area||'';
+  $('geometry').textContent='Площадь схемы '+s.room.sketch_area+' м²'+(s.room.declared_area?' (на чертеже '+s.room.declared_area+' м²).':'.');
+  formLoaded=true;lastRoom=JSON.stringify(s.room);
+ }
+ const devicesKey=JSON.stringify(s.devices||{});
+ if(devicesKey!==lastDevices){lastDevices=devicesKey;refreshDeviceEditor();}
+ $('deviceSummary').replaceChildren();
+ for(const [key,info] of Object.entries(equipment)){
+  const device=(s.devices||{})[key],row=document.createElement('div');
+  row.textContent=info.name+': '+(device?'X '+device.position[0].toFixed(2)+' м, Z '+device.position[1].toFixed(2)+' м'+(device.height===null?'':' · высота '+device.height+' м'):'не размещён');
+  $('deviceSummary').appendChild(row);
+ }
+ const lock=!!(s.recording||s.sessions.length);
+ for(const id of ['deviceX','deviceZ','deviceHeight','saveDevice','removeDevice'])$(id).disabled=mapMode()==='person'||lock;
+ $('notice').textContent=s.message;
+ const c=s.recording;
+ for(const id of ['diagEmpty','diagA','diagB'])$(id).disabled=!!c||!s.room;
+ $('timer').textContent=c?(c.phase==='waiting'?'Займите место / выйдите: ':'Запись: ')+c.left_s+' с · окон '+c.windows+((c.role==='diagnostic'||c.role==='visit')&&Number.isFinite(c.raw_packet_count)?' · сырых пакетов '+c.raw_packet_count:''):'Запись не идёт';
+ if(c&&c.visit_instruction)$('timer').textContent=c.visit_instruction+' · '+c.visit_step_left_s+' с. '+$('timer').textContent;
+ const receivers=new Set(s.active_lines.map(line=>line.split(' <- ')[0]));
+ const visitUnavailable=!!c||receivers.size<2||!s.room||!!(s.quality&&s.quality.blocked);
+ $('visitA').disabled=visitUnavailable||!inside(s.room,1,.92);
+ $('visitB').disabled=visitUnavailable||!inside(s.room,5.35,.72);
+ $('record').disabled=!!c||receivers.size<2||mapMode()!=='person';$('cancel').disabled=!c;$('train').disabled=!!c;
+ if(receivers.size<2&&!c)$('timer').textContent='Ожидаются данные от двух ESP — запись недоступна';
+ const ab=s.ab_preview;
+ $('abControls').hidden=!s.ab_available&&!ab;
+ $('abStart').disabled=!s.ab_available||!!c||receivers.size<2||!!(s.quality&&s.quality.blocked);
+ $('abStop').disabled=!ab;
+ $('abStart').textContent=ab?'Заново записать фон':'Включить пробный A/B';
+ let abStatus='Контрольные точки A и B. Для запуска нужна пустая комната.';
+ if(ab){
+  if(ab.phase==='waiting')abStatus='Выйдите и закройте дверь. До записи фона '+ab.left_s+' с.';
+  else if(ab.phase==='calibrating')abStatus='Запись фона пустой комнаты · '+ab.left_s+' с.';
+  else if(ab.phase==='active')abStatus='Фон записан. Можно войти и проверить A и B.';
+  else abStatus='Нужно записать фон заново.';
+ }
+ $('abStatus').textContent=abStatus;
+ const e=s.estimate,names={ab_calibrating:'Калибровка фона A/B',ab_recalibrate:'Нужна повторная калибровка A/B',ab_present_unknown:'Есть человек · место неизвестно',untrained:'Нужны записи и обучение',missing_lines:'Нет данных от всех нужных линий',poor_signal:'Недостаточное качество приёма — координаты скрыты',model_unreliable:'Модель не прошла контроль — координаты скрыты',unknown:'Положение неизвестно',empty:'Пусто',estimated:'Оценка положения'};
+ $('estimate').textContent=names[e.state]||e.state;
+ $('estimate').setAttribute('data-state',e.state);
+ if(e.state==='estimated'){
+  if(e.mode==='ab')$('estimate').textContent='Контрольная точка '+e.point+' · сектор '+e.sector;
+  else $('estimate').textContent+=': X '+e.position[0].toFixed(2)+' м · Z '+e.position[1].toFixed(2)+' м · сектор '+e.sector;
+ }
+ const r=s.report,t=r&&r.test;
+ if(r&&r.passes_basic_check===false)$('guideStep').textContent='Контроль различимости не пройден. Новые проверочные записи пока не нужны.';
+ if(r&&r.failed_test_recordings&&r.failed_test_recordings.length)$('guideStep').textContent='Независимая проверка не пройдена — координаты скрыты. Сначала разберите ошибки модели.';
+
+ if(r&&r.algorithm&&r.algorithm!==lastAlgorithm){lastAlgorithm=r.algorithm;$('algorithm').value=r.algorithm;}
+ $('report').textContent=r?'Обучена модель: '+r.method+'. Обучающих сеансов: '+r.training_recordings+'. Проверка с исключением целого обучающего сеанса: '+(r.recording_cv_accuracy*100).toFixed(1)+'% опорных мест. Это предварительный показатель, не независимая точность.'+(r.diagnostic_recordings?' Диагностических записей: '+r.diagnostic_recordings+'; они исключены из независимой оценки.':''):'Модель ещё не обучена.';
+ $('accuracy').textContent=t?'Проверочных окон: '+t.windows+'; доля выданных оценок '+(t.coverage*100).toFixed(1)+'%; правильных секторов среди окон с человеком '+(t.sector_accuracy===null?'нет данных':(t.sector_accuracy*100).toFixed(1)+'%')+'; координаты выданы для '+(t.position_coverage===null?'нет данных':(t.position_coverage*100).toFixed(1)+'%')+' окон с человеком. Ошибка координат: медиана '+(t.median_error_m===null?'нет данных':t.median_error_m.toFixed(2)+' м')+', 90-й процентиль '+(t.p90_error_m===null?'нет данных':t.p90_error_m.toFixed(2)+' м')+'. Ошибок присутствия на пустых окнах: '+t.false_present+'/'+t.empty_windows+'.':'Независимая погрешность не измерена. Добавьте проверочные сеансы.';
+ if(ab)$('accuracy').textContent='Пробный режим оценивает две размеченные точки A и B.';
+ $('sessions').replaceChildren();
+ for(const a of [...s.sessions].reverse()){
+  const tr=document.createElement('tr');
+  const place=a.role==='visit'?'Заход в '+a.label.split(':')[1]:a.position?'('+a.position.map(v=>v.toFixed(2)).join('; ')+')':'Пусто';
+  const purpose={train:'Обучение',diagnostic:'Диагностика',visit:'Сценарий',test:'Проверка'}[a.role]||a.role;
+  for(const text of [place,purpose,a.windows]){
+   const td=document.createElement('td');td.textContent=text;tr.appendChild(td);
+  }$('sessions').appendChild(tr);
+ }
+ const q=s.quality;
+ $('qualityLines').replaceChildren();$('qualityReceivers').replaceChildren();
+ if(q){
+  $('qualitySummary').textContent=q.blocked?'Недостаточно качественных данных: координаты и плохие окна записи блокируются.':'Доступные показатели приёма в норме. Это не подтверждение отсутствия помех.';
+  const names={missing:'нет пакетов',channel_changed:'сменился канал',warming_up:'прогрев окна',receiver_restarted:'сброс счётчика — ожидание стабилизации',packet_loss:'пропуски пакетов',unstable_order:'повторы / нарушение порядка',invalid_rssi:'нет корректного RSSI',bad_frames:'слишком много плохих кадров',weak_rssi:'слабый сигнал',low_snr:'низкий SNR'};
+  const fmt=v=>v===null||v===undefined?'—':Number(v).toFixed(1);
+  for(const [key,row] of Object.entries(q.lines)){
+   const tr=document.createElement('tr');
+   for(const value of [key,fmt(row.rssi_dbm),fmt(row.noise_dbm),fmt(row.snr_est_db),row.packets_per_window+' (отброшено '+row.rejected_frames+')',row.ok?'Достаточно':row.reasons.map(v=>names[v]||v).join('; ')]){
+    const td=document.createElement('td');td.textContent=value;tr.appendChild(td);
+   }$('qualityLines').appendChild(tr);
+  }
+  for(const [key,row] of Object.entries(q.receivers)){
+   const p=document.createElement('p');p.textContent=key+': пропуски seq '+(row.loss_ratio===null?'нет данных':(row.loss_ratio*100).toFixed(1)+'%')+', повторов '+row.duplicates+', вне порядка '+row.reordered+', сбросов счётчика за время работы '+row.resets_seen;
+   $('qualityReceivers').appendChild(p);
+  }
+ }
+ $('lines').replaceChildren();
+ for(const key of s.lines.length?s.lines:s.active_lines){
+  const p=document.createElement('div');p.textContent=(s.active_lines.includes(key)?'● ':'○ ')+key;$('lines').appendChild(p);
+ }
+ draw();
+}
+function connect(){
+ ws=new WebSocket('ws://'+(location.hostname||'127.0.0.1')+':8765');
+ ws.onopen=()=>{$('connection').textContent='Сервер подключён';send('localization_status');};
+ ws.onmessage=ev=>{try{const d=JSON.parse(ev.data);if(d.type==='localization')render(d);if(d.type==='localization_error'&&!plan.error(d.message))$('error').textContent=d.message;}catch(err){console.error(err);}};
+ ws.onclose=()=>{plan.disconnected();if(state)plan.sync(state,false);$('connection').textContent='Соединение потеряно — переподключение';$('estimate').textContent='Нет связи с сервером';$('qualitySummary').textContent='Нет связи с сервером — показатели приёма неактуальны';$('record').disabled=true;$('visitA').disabled=true;$('visitB').disabled=true;$('abStart').disabled=true;$('abStop').disabled=true;$('abStatus').textContent='Нет связи с сервером';if(state){state.estimate={state:'unknown',position:null};draw();}setTimeout(connect,2000);};
+ ws.onerror=()=>{$('connection').textContent='Нет соединения';};
+}
+connect();
+</script>
+</html>

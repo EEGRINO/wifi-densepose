@@ -282,7 +282,7 @@
 <body>
   <div id="setup" class="card">
     <h2>Настройка RuView</h2>
-    <p class="status">Подключитесь к точке <b>RuView_Setup</b> и откройте эту страницу. Укажите вашу сеть (роутер на <b>канале 13</b>, 802.11n, 20&nbsp;MHz) и IP ПК для UDP CSI (порт 5555).</p>
+    <p class="status">Подключитесь к точке <b>RuView_Setup</b> и откройте эту страницу. Укажите вашу сеть (роутер с фиксированным каналом 2,4&nbsp;ГГц и полосой 20&nbsp;MHz) и IP ПК для UDP CSI (порт 5555).</p>
     <label>SSID роутера</label>
     <input id="f_ssid" autocomplete="off" />
     <label>Пароль Wi‑Fi</label>
@@ -305,6 +305,8 @@
       <span class="badge">Wi‑Fi CSI · ESP32‑S3</span>
       <div class="metrics">
         <div>RSSI <b id="m_rssi">—</b> dBm</div>
+        <div>Кристалл <b id="m_temp">—</b> °C</div>
+        <div>Обрывов Wi‑Fi <b id="m_disconnects">—</b></div>
         <div>Motion <b id="m_motion">—</b></div>
         <div>WS <b id="m_ws">offline</b></div>
       </div>
@@ -634,6 +636,21 @@
     fetch('/api/calibrate', { method: 'POST' }).catch(() => {});
   };
 
+  async function pollDeviceHealth() {
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      if (!r.ok) throw new Error('status');
+      const j = await r.json();
+      document.getElementById('m_temp').textContent =
+        typeof j.chip_temperature_c === 'number' ? j.chip_temperature_c.toFixed(1) : '—';
+      document.getElementById('m_disconnects').textContent =
+        j.wifi && typeof j.wifi.disconnect_count === 'number' ? j.wifi.disconnect_count : '—';
+    } catch (e) {
+      document.getElementById('m_temp').textContent = '—';
+      document.getElementById('m_disconnects').textContent = 'нет связи';
+    }
+  }
+
   async function loadUdpFromDevice() {
     try {
       const r = await fetch('/api/status');
@@ -701,6 +718,8 @@
     connectWs();
     startRaf();
     loadUdpFromDevice();
+    pollDeviceHealth();
+    setInterval(pollDeviceHealth, 5000);
     setTimeout(tryInitObservatory, 80);
   }
 

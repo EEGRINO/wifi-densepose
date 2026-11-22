@@ -8,6 +8,8 @@
 #include <ESPmDNS.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_system.h>
+#include <math.h>
 
 static DNSServer g_dns;
 static bool g_apMode = false;
@@ -17,6 +19,78 @@ static bool g_mdnsStarted = false;
 static volatile bool g_gotIpPending = false;
 static uint32_t g_restartAtMs = 0;
 static uint32_t g_lastConnectAttemptMs = 0;
+static volatile uint32_t g_disconnectCount = 0;
+static volatile uint32_t g_gotIpCount = 0;
+static volatile uint32_t g_lastDisconnectMs = 0;
+static volatile uint8_t g_lastDisconnectReason = 0;
+static uint32_t g_reconnectAttempts = 0;
+static esp_err_t g_bandwidthSetError = ESP_OK;
+static float g_chipTemperatureC = NAN;
+static uint32_t g_temperatureAtMs = 0;
+static volatile bool g_disconnectLogPending = false;
+struct DisconnectRecord { uint32_t atMs; uint8_t reason; };
+static DisconnectRecord g_disconnectHistory[8] = {};
+static portMUX_TYPE g_wifiDiagMux = portMUX_INITIALIZER_UNLOCKED;
+
+static const char *resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON: return "power_on";
+    case ESP_RST_EXT: return "external";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "interrupt_watchdog";
+    case ESP_RST_TASK_WDT: return "task_watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep_sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO: return "sdio";
+    default: return "unknown";
+  }
+}
+
+void ruviewWifiFillStatus(JsonDocument &doc) {
+  doc["firmware"] = "network-diag-2";
+  doc["uptime_ms"] = millis();
+  doc["reset_reason"] = (int)esp_reset_reason();
+  doc["reset_reason_name"] = resetReasonName(esp_reset_reason());
+  doc["min_heap"] = ESP.getMinFreeHeap();
+  if (isfinite(g_chipTemperatureC)) doc["chip_temperature_c"] = g_chipTemperatureC;
+  else doc["chip_temperature_c"] = nullptr;
+  doc["temperature_age_ms"] = g_temperatureAtMs ? millis() - g_temperatureAtMs : 0;
+
+  uint32_t count, gotIp, at; uint8_t reason;
+  DisconnectRecord history[8];
+  portENTER_CRITICAL(&g_wifiDiagMux);
+  count = g_disconnectCount; gotIp = g_gotIpCount;
+  at = g_lastDisconnectMs; reason = g_lastDisconnectReason;
+  memcpy(history, g_disconnectHistory, sizeof(history));
+  portEXIT_CRITICAL(&g_wifiDiagMux);
+  JsonObject wifi = doc["wifi"].to<JsonObject>();
+  wifi["status"] = (int)WiFi.status();
+  wifi["disconnect_count"] = count;
+  wifi["got_ip_count"] = gotIp;
+  wifi["reconnect_attempts"] = g_reconnectAttempts;
+  wifi["last_disconnect_reason"] = reason;
+  wifi["last_disconnect_at_ms"] = at;
+  wifi["bandwidth_set_error"] = (int)g_bandwidthSetError;
+  wifi_bandwidth_t bandwidth = WIFI_BW_HT20;
+  esp_err_t bandwidthError = esp_wifi_get_bandwidth(WIFI_IF_STA, &bandwidth);
+  wifi["bandwidth_query_error"] = (int)bandwidthError;
+  if (bandwidthError == ESP_OK) wifi["bandwidth_mhz"] = bandwidth == WIFI_BW_HT20 ? 20 : 40;
+  else wifi["bandwidth_mhz"] = nullptr;
+  uint8_t primary = 0; wifi_second_chan_t secondary = WIFI_SECOND_CHAN_NONE;
+  if (esp_wifi_get_channel(&primary, &secondary) == ESP_OK) {
+    wifi["primary_channel"] = primary;
+    wifi["secondary_channel"] = (int)secondary;
+  }
+  JsonArray events = wifi["disconnect_history"].to<JsonArray>();
+  const uint32_t size = count < 8 ? count : 8;
+  for (uint32_t i = 0; i < size; i++) {
+    const DisconnectRecord &record = history[(count - size + i) % 8];
+    JsonObject event = events.add<JsonObject>();
+    event["at_ms"] = record.atMs; event["reason"] = record.reason;
+  }
+}
 
 /** Сколько ждать первого подключения с новыми (ни разу не проверенными) SSID/паролем, прежде чем вернуться в AP. */
 static const uint32_t kFirstConnectTimeoutMs = 30000;
@@ -39,6 +113,7 @@ static void printRuviewStatus() {
   Serial.println();
   Serial.println(F("--- RuView (USB CDC) ---"));
   Serial.printf("Heap free: %u\n", (unsigned)ESP.getFreeHeap());
+  Serial.printf("Reset reason: %s; uptime %u ms\n", resetReasonName(esp_reset_reason()), (unsigned)millis());
   if (g_apMode) {
     Serial.printf("Mode: AP \"%s\"\n", RUVIEW_AP_SSID);
     Serial.printf("Open in browser: http://%s/\n", WiFi.softAPIP().toString().c_str());
@@ -121,9 +196,22 @@ static void startApProvisioning() {
   ruviewHttpBegin(true);
 }
 
-static void onWifiEvent(WiFiEvent_t event) {
+static void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    portENTER_CRITICAL(&g_wifiDiagMux);
+    g_gotIpCount++;
+    portEXIT_CRITICAL(&g_wifiDiagMux);
     g_gotIpPending = true;
+  } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    const uint32_t at = millis();
+    const uint8_t reason = info.wifi_sta_disconnected.reason;
+    portENTER_CRITICAL(&g_wifiDiagMux);
+    g_disconnectHistory[g_disconnectCount % 8] = {at, reason};
+    g_disconnectCount++;
+    g_lastDisconnectMs = at;
+    g_lastDisconnectReason = reason;
+    portEXIT_CRITICAL(&g_wifiDiagMux);
+    g_disconnectLogPending = true;
   }
 }
 
@@ -155,6 +243,7 @@ static void startSta() {
   WiFi.setAutoReconnect(true);
   applyEuCountry();
   esp_wifi_set_ps(WIFI_PS_NONE);
+  g_bandwidthSetError = esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
 
   WiFi.begin(g_cfg.ssid, g_cfg.pass);
   g_lastConnectAttemptMs = millis();
@@ -226,6 +315,16 @@ void loop() {
     ESP.restart();
   }
   pollResetButton(now);
+  if (!g_temperatureAtMs || now - g_temperatureAtMs >= 5000) {
+    g_chipTemperatureC = temperatureRead();
+    g_temperatureAtMs = now;
+  }
+  if (g_disconnectLogPending && Serial) {
+    g_disconnectLogPending = false;
+    Serial.printf("[RuView] WiFi disconnected: reason=%u count=%u at=%u ms\n",
+                  (unsigned)g_lastDisconnectReason, (unsigned)g_disconnectCount,
+                  (unsigned)g_lastDisconnectMs);
+  }
 
   if (g_apMode) {
     g_dns.processNextRequest();
@@ -236,6 +335,7 @@ void loop() {
     }
     if (WiFi.status() != WL_CONNECTED && now - g_lastConnectAttemptMs >= kReconnectIntervalMs) {
       g_lastConnectAttemptMs = now;
+      g_reconnectAttempts++;
       Serial.println(F("[RuView] Нет связи с роутером — переподключение"));
       WiFi.disconnect();
       WiFi.begin(g_cfg.ssid, g_cfg.pass);

@@ -13,6 +13,7 @@ from typing import Any
 
 import csi_packet
 from presence import PresenceDetector
+from localization import Localization
 
 # ── КОНФИГУРАЦИЯ ──────────────────────────────────────────────────────────────
 UDP_IP   = "0.0.0.0"
@@ -38,6 +39,9 @@ _HERE      = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(_HERE, "models", "model-q4.bin")
 
 connected_clients: set = set()
+localization_clients: set = set()
+localization = Localization(os.path.join(_HERE, "localization_data"))
+
 
 # Диагностика: UDP есть, но в браузер не уходит (раз в ~15 с)
 _last_log_no_ws: float = 0.0
@@ -1384,6 +1388,50 @@ def parse_ruview_packet(data: bytes, *, source_ip: str | None = None) -> dict | 
 async def handle_cmd(cmd: dict, ws):
     action = cmd.get("cmd", "")
 
+    if isinstance(action, str) and action.startswith("localization_"):
+        localization_clients.add(ws)
+        try:
+            if action == "localization_dataset_new":
+                localization.new_dataset()
+            elif action == "localization_dataset_open":
+                localization.open_dataset(cmd.get("dataset_id"))
+            elif action == "localization_diagnostic":
+                localization.mark_diagnostic(cmd.get("session_id"))
+            elif action == "localization_config":
+                localization.configure(cmd.get("width"), cmd.get("depth"),
+                                       cmd.get("cols"), cmd.get("rows"),
+                                       cmd.get("shape", "rectangle"),
+                                       cmd.get("short_width"), cmd.get("declared_area"),
+                                       outline=cmd.get("outline"), curves=cmd.get("curves"),
+                                       cutouts=cmd.get("cutouts"),
+                                       fork_if_recorded=cmd.get("fork_if_recorded") is True,
+                                       base_dataset_id=cmd.get("base_dataset_id"),
+                                       new_plan=cmd.get("new_plan") is True,
+                                       sector_mode=cmd.get("sector_mode", "manual"))
+            elif action == "localization_device":
+                localization.set_device(cmd.get("device"), cmd.get("x"), cmd.get("z"),
+                                        cmd.get("height"))
+            elif action == "localization_record":
+                localization.start(cmd.get("x"), cmd.get("z"), cmd.get("role", "train"),
+                                   cmd.get("delay", 15), cmd.get("seconds", 20), time.monotonic())
+            elif action in ("localization_visit_a", "localization_visit_b"):
+                localization.start_visit(action[-1].upper(), time.monotonic())
+            elif action == "localization_cancel":
+                localization.stop()
+            elif action == "localization_ab_start":
+                localization.start_ab_preview(time.monotonic())
+            elif action == "localization_ab_stop":
+                localization.stop_ab_preview()
+            elif action == "localization_train":
+                localization.train(cmd.get("algorithm", "ridge"))
+                localization.stop_ab_preview()
+            elif action != "localization_status":
+                raise ValueError("Неизвестная команда локализации")
+            await ws.send(_udp_payload_to_json(localization.status(time.monotonic())))
+        except (ValueError, TypeError, OSError, ImportError) as error:
+            await ws.send(json.dumps({"type": "localization_error", "message": str(error)}))
+        return
+
     if action == "calibrate_start":
         label    = cmd.get("label", "walking")
         n_people = max(0, min(20, int(cmd.get("n_people", 1))))
@@ -1630,6 +1678,7 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
                 if fr is None:
                     continue
                 presence.add(a[0], fr, t_wall)
+                localization.add(a[0], fr, now, raw_packet=d)
                 if not fr.from_node:
                     latest[a[0]] = (d, a)
             batch = list(latest.values())
@@ -1755,6 +1804,7 @@ async def ws_handler(websocket):
         pass
     finally:
         connected_clients.discard(websocket)
+        localization_clients.discard(websocket)
 
 
 async def _broadcast_json(obj: dict) -> None:
@@ -1781,10 +1831,23 @@ async def presence_loop():
         await asyncio.sleep(0.2)
 
 
+async def localization_loop():
+    while True:
+        try:
+            status = localization.tick(time.monotonic())
+            if status and localization_clients:
+                message = _udp_payload_to_json(status)
+                await asyncio.gather(*[client.send(message) for client in list(localization_clients)],
+                                     return_exceptions=True)
+        except Exception:
+            traceback.print_exc()
+        await asyncio.sleep(0.2)
+
+
 async def main():
     # большие JSON-пакеты с сотнями пар CSI+поза
     async with websockets.serve(ws_handler, "0.0.0.0", WS_PORT, max_size=16 * 1024 * 1024):
-        await asyncio.gather(udp_listener(), presence_loop())
+        await asyncio.gather(udp_listener(), presence_loop(), localization_loop())
 
 
 if __name__ == "__main__":

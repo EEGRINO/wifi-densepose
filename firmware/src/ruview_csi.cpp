@@ -5,6 +5,7 @@
 #include <esp_wifi.h>
 #include <math.h>
 #include <string.h>
+#include <errno.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -56,6 +57,8 @@ struct CsiStats {
   uint32_t pingSent;
   uint32_t pingReplies;
   uint32_t pingFail;
+  uint32_t pingSocketResets;
+  int32_t pingLastErrno;
   uint32_t beaconsSent;
   uint32_t beaconFail;
   volatile uint32_t espnowRx;       // все принятые ESP-NOW (любое содержимое)
@@ -76,6 +79,8 @@ static volatile bool g_haveApMac = false;
 static uint32_t g_seq = 0;
 static CsiStats g_stats = {};
 static TaskHandle_t g_trafficTask = nullptr;
+/* Increased on each acquired IP. Socket owners recreate their sockets on their own tasks. */
+static volatile uint32_t g_networkGeneration = 0;
 static TaskHandle_t g_beaconTask = nullptr;
 static volatile bool g_calibrateReq = false;
 
@@ -224,6 +229,14 @@ static void trafficTask(void *arg) {
   (void)arg;
   int sock = -1;
   uint16_t seq = 0;
+  uint32_t generation = g_networkGeneration;
+  auto resetSocket = [&]() {
+    if (sock >= 0) { lwip_close(sock); sock = -1; g_stats.pingSocketResets++; }
+  };
+  auto invalidSocket = [](int error) {
+    return error == EBADF || error == ENOTSOCK || error == ENOTCONN ||
+           error == ENETDOWN || error == ENETUNREACH || error == EHOSTUNREACH;
+  };
   TickType_t last = xTaskGetTickCount();
   struct __attribute__((packed)) {
     struct icmp_echo_hdr h;
@@ -232,8 +245,13 @@ static void trafficTask(void *arg) {
   uint8_t rx[64];
 
   for (;;) {
+    if (generation != g_networkGeneration) {
+      resetSocket();
+      generation = g_networkGeneration;
+    }
     const uint16_t hz = g_cfg.traffic_hz > 500 ? 500 : g_cfg.traffic_hz;
     if (hz == 0 || WiFi.status() != WL_CONNECTED) {
+      resetSocket();
       vTaskDelay(pdMS_TO_TICKS(500));
       last = xTaskGetTickCount();
       continue;
@@ -264,16 +282,25 @@ static void trafficTask(void *arg) {
       g_stats.pingSent++;
     } else {
       g_stats.pingFail++;
+      const int error = errno;
+      g_stats.pingLastErrno = error;
+      if (invalidSocket(error)) { resetSocket(); continue; }
     }
     /* Ответы только считаем, чтобы буфер сокета не переполнялся. */
-    while (recv(sock, rx, sizeof(rx), MSG_DONTWAIT) > 0) {
+    int received;
+    while ((received = recv(sock, rx, sizeof(rx), MSG_DONTWAIT)) > 0) {
       g_stats.pingReplies++;
+    }
+    if (received < 0 && invalidSocket(errno)) {
+      g_stats.pingLastErrno = errno;
+      resetSocket();
     }
   }
 }
 
 void ruviewTrafficRestart() {
-  /* Задача сама читает g_cfg.traffic_hz и адрес шлюза — достаточно запустить её один раз. */
+  /* The task persists, but a socket from the previous connection must not be reused. */
+  g_networkGeneration++;
   if (!g_trafficTask) {
     xTaskCreatePinnedToCore(trafficTask, "ruv_traffic", 3072, nullptr, 3, &g_trafficTask, 1);
   }
@@ -355,6 +382,9 @@ void ruviewCsiFillStatus(JsonDocument &doc) {
   c["ping_sent"] = g_stats.pingSent;
   c["ping_replies"] = g_stats.pingReplies;
   c["ping_fail"] = g_stats.pingFail;
+  c["ping_socket_resets"] = g_stats.pingSocketResets;
+  c["ping_last_errno"] = g_stats.pingLastErrno;
+  c["network_generation"] = g_networkGeneration;
   c["beacon_hz"] = g_cfg.beacon_hz;
   c["beacons_sent"] = g_stats.beaconsSent;
   c["beacon_fail"] = g_stats.beaconFail;
@@ -446,6 +476,7 @@ static void sendUdpRuv2(const IPAddress &ip, const CsiFrame &f) {
 void ruviewStreamTask(void *arg) {
   (void)arg;
   g_udp.begin(0);
+  uint32_t networkGeneration = g_networkGeneration;
 
   static float amp[RUVIEW_SC_MAX];
   static float prevAmp[RUVIEW_SC_MAX];
@@ -471,6 +502,12 @@ void ruviewStreamTask(void *arg) {
   for (;;) {
     const bool got = g_csiQueue && xQueueReceive(g_csiQueue, &f, pdMS_TO_TICKS(20)) == pdTRUE;
     const uint32_t now = millis();
+    if (networkGeneration != g_networkGeneration) {
+      /* Only the stream task owns g_udp, including both RUV2 and ADR sends. */
+      g_udp.stop();
+      g_udp.begin(0);
+      networkGeneration = g_networkGeneration;
+    }
 
     if (got) {
       /* server_ip меняется из веб-панели — перепарсиваем только при изменении строки. */
@@ -478,7 +515,7 @@ void ruviewStreamTask(void *arg) {
         strlcpy(dstStr, g_cfg.server_ip, sizeof(dstStr));
         dstOk = dstStr[0] != '\0' && dst.fromString(dstStr);
       }
-      if (dstOk && g_cfg.server_port != 0) {
+      if (dstOk && g_cfg.server_port != 0 && WiFi.status() == WL_CONNECTED) {
         sendUdpRuv2(dst, f);
         sendUdpAdr018(dst, f);
       }

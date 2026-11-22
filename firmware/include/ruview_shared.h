@@ -45,6 +45,7 @@ void ruviewClearConfig();
 void ruviewRequestRestart(uint32_t delayMs);
 void ruviewRequestCalibrate();
 void ruviewHttpBegin(bool apMode);
+void ruviewWifiFillStatus(JsonDocument &doc);
 void ruviewCsiBegin();
 void ruviewCsiStop();
 /** MAC роутера (BSSID): CSI принимается от него и от узлов RuView (по маякам ESP-NOW). */

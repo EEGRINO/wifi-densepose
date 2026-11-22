@@ -73,6 +73,20 @@ def read_recording(path: str | os.PathLike) -> Iterator[tuple[int, float, object
                 yield kind, t, (json.loads(text) if kind == REC_META else text)
 
 
+def write_recording(path, packets, metadata, label):
+    """Write already received packets in the same format, without binding another UDP socket."""
+    start = float(metadata["start_unix"])
+    with open(path, "xb") as f:
+        f.write(MAGIC)
+        for kind, value in ((REC_META, json.dumps(metadata, ensure_ascii=False, allow_nan=False)),
+                            (REC_LABEL, label)):
+            data = value.encode("utf-8")
+            f.write(_HDR.pack(kind, start) + struct.pack("<H", len(data)) + data)
+        for when, ip, packet in packets:
+            f.write(_HDR.pack(REC_PACKET, when) + socket.inet_aton(ip)
+                    + struct.pack("<H", len(packet)) + packet)
+
+
 class Recorder:
     def __init__(self, path: Path, port: int) -> None:
         self.f = open(path, "wb")

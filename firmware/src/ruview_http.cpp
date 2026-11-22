@@ -193,6 +193,7 @@ void ruviewHttpBegin(bool apMode) {
     doc["mode"] = apMode ? "ap" : "sta";
     doc["heap"] = ESP.getFreeHeap();
     doc["psram"] = ESP.getFreePsram();
+    ruviewWifiFillStatus(doc);
     doc["udp_server"] = g_cfg.server_ip;
     doc["udp_port"] = g_cfg.server_port;
     doc["ruview_adr_port"] = g_cfg.ruview_adr_port;
