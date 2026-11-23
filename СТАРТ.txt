@@ -1,8 +1,7 @@
-./venv/bin/python3 nn_pipeline.py
+WiFi DensePose — быстрый запуск
 
+Windows: откройте Start-Windows.cmd из корня репозитория.
+Linux / macOS: python3 build_scripts/start_web.py
 
-cd laptop_server
-  python3 -m http.server 8000 --directory static
-
-
-sudo ping -i 0.05 192.168.31.106
+После запуска: http://127.0.0.1:8000/localization.html
+Установка Python, подключение ESP32 и список экранов описаны в README.md.
