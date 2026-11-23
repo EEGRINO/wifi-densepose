@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>Радиовизор · WiFi DensePose</title>
+ <link rel="stylesheet" href="radioview.css">
+ <script defer src="room_editor.js"></script>
+ <script defer src="radioview_scene.js"></script>
+ <script defer src="radioview.js"></script>
+</head>
+<body>
+<main>
+ <header class="page-head">
+  <div><a class="back" href="localization.html">← План и калибровка</a><h1>Радиовизор</h1></div>
+  <span class="connection" id="connection" role="status">Подключение…</span>
+ </header>
+ <div class="workspace">
+  <section class="panel stage" aria-label="Карта и обзор устройства">
+   <div class="toolbar">
+    <div class="tabs" role="group" aria-label="Режим обзора">
+     <button type="button" id="map-view" aria-pressed="true">Карта</button>
+     <button type="button" id="esp1-view" class="esp-a" aria-pressed="false" disabled>ESP A</button>
+     <button type="button" id="esp2-view" class="esp-b" aria-pressed="false" disabled>ESP B</button>
+    </div>
+    <output id="view-label">План помещения</output>
+   </div>
+   <div class="viewport">
+    <canvas id="room" tabindex="0" aria-label="Карта помещения. В режиме ESP вращайте обзор стрелками или перетаскиванием."></canvas>
+    <div id="no-plan" class="empty" hidden>
+     <strong>Сохраните контур помещения</strong>
+     <p>Сетка появится автоматически после сохранения плана.</p>
+     <a href="localization.html">Открыть редактор плана</a>
+    </div>
+   </div>
+   <div class="stage-foot"><span id="stage-hint">Выберите ESP для обзора с её позиции.</span><span id="grid-label" hidden></span></div>
+  </section>
+  <aside aria-label="Состояние и сигнал">
+   <section class="panel readout">
+    <h2>Положение</h2>
+    <p id="position" role="status">Ожидание данных</p>
+    <p id="position-source" class="muted"></p>
+   </section>
+   <section class="panel readout">
+    <h2>Приёмники</h2>
+    <label for="esp1-ip" class="esp-a">ESP A</label><select id="esp1-ip" disabled><option value="">Выберите IP</option></select>
+    <label for="esp2-ip" class="esp-b">ESP B</label><select id="esp2-ip" disabled><option value="">Выберите IP</option></select>
+    <p id="receiver-hint" class="muted">Укажите IP каждой платы, чтобы связать поток CSI с её меткой на плане.</p>
+   </section>
+   <section class="panel readout" id="radio-panel" hidden>
+    <h2 id="radio-title">Сигнал</h2>
+    <p id="radio-status" class="muted" role="status"></p>
+    <canvas id="spectrum" aria-label="Нормированная амплитуда поднесущих CSI"></canvas>
+    <p class="muted graph-label">Нормированная амплитуда CSI</p>
+    <div class="pose" id="pose-panel" hidden>
+     <h3>Оценка позы</h3>
+     <canvas id="pose" aria-label="Плоская оценка суставов по CSI"></canvas>
+    </div>
+    <p id="pose-status" class="muted"></p>
+   </section>
+  </aside>
+ </div>
+</main>
+</body>
+</html>
