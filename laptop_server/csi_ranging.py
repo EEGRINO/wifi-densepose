@@ -146,23 +146,27 @@ def fit(empty, captures, points, config, lines, *, anchor_only=False):
     }
 
 
-def estimate(model, feature):
+def evaluate_position(model, feature):
     if feature is None:
-        return None
+        return "waiting_signal", None
     vector = (np.asarray(feature) - model["baseline"]) * model["scale"]
     if magnitude(vector) <= model["empty_threshold"]:
-        return None
+        return "near_background", None
     errors = magnitude(model["centers"] - vector)
     order = np.argsort(errors)[:3]
     best = order[0]
     if errors[best] > model["radii"][best]:
-        return None
+        return "outside_calibration", None
     if model.get("anchor_only"):
-        return model["positions"][best]
+        return "estimated", model["positions"][best]
     points = np.asarray(model["positions"])
     weights = 1 / np.maximum(errors[order], 0.01) ** 3
     position = np.average(points[order], axis=0, weights=weights).tolist()
-    return position if inside_room(model["layout"]["room"], position) else points[best].tolist()
+    return "estimated", position if inside_room(model["layout"]["room"], position) else points[best].tolist()
+
+
+def estimate(model, feature):
+    return evaluate_position(model, feature)[1]
 
 
 def validation(model, controls, empty, tolerance):

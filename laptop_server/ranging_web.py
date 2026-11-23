@@ -8,7 +8,7 @@ from copy import deepcopy
 
 import numpy as np
 
-from csi_ranging import TOLERANCE_MM, distances, estimate, fit, layout, validation
+from csi_ranging import TOLERANCE_MM, distances, estimate, evaluate_position, fit, layout, validation
 from localization import WINDOW, inside_room, save_json
 
 REFERENCE = "background"
@@ -67,12 +67,19 @@ class RangingWeb:
         background_failed = bool(diagnostic and diagnostic["empty"] and diagnostic["empty"]["false_positions"])
         if report is not None:
             background_failed = bool(report["empty_false_positions"])
-        point = (estimate(model, snapshot["features"])
-                 if model and model["lines"] == snapshot["lines"] and not background_failed else None)
-        live_state = ("model_needed" if not model else "background_failed" if background_failed
-                      else "waiting_signal" if not self.signal_ready(snapshot)
-                      else "lines_changed" if model["lines"] != snapshot["lines"]
-                      else "estimated" if point is not None else "unknown")
+        signal_ready = self.signal_ready(snapshot)
+        point, live_reason = None, None
+        if not model:
+            live_state = "model_needed"
+        elif background_failed:
+            live_state = "background_failed"
+        elif not set(model["lines"]).issubset(snapshot["lines"]):
+            live_state = "lines_changed" if signal_ready else "waiting_signal"
+        else:
+            features = (snapshot["features"] if model["lines"] == snapshot["lines"]
+                        else self.localization.feature(now, model["lines"]))
+            live_reason, point = evaluate_position(model, features)
+            live_state = live_reason if live_reason in ("waiting_signal", "estimated") else "unknown"
         points = self.data["points"]
         captures = self.data["captures"]
         background = captures.get(REFERENCE)
@@ -88,7 +95,8 @@ class RangingWeb:
             "type": "ranging_web", "dataset": self.localization.dataset, "room": snapshot["room"],
             "devices": snapshot["devices"], "points": points, "windows": windows,
             "stale": sorted(set(captures) - set(compatible)), "lines": snapshot["lines"],
-            "signal_ready": self.signal_ready(snapshot), "model_ready": model is not None, "live_state": live_state,
+            "signal_ready": signal_ready, "model_ready": model is not None, "live_state": live_state,
+            "live_reason": live_reason,
             "busy_elsewhere": self.localization.recording is not None,
             "training": {"points": len(trainers), "recorded": sum(key in windows for key in trainers),
                          "required": MIN_TRAINING_POINTS, "background": REFERENCE in windows},

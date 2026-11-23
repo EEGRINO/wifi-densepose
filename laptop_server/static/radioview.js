@@ -141,6 +141,17 @@
   bindReceivers();
  }
 
+ function rangingHint(state) {
+  if (state.can_train&&!state.model_ready) return 'Записи готовы. Нажмите «Обучить по записям» на странице расстояний.';
+  if (state.live_state==='model_needed') return 'На странице расстояний запишите фон и минимум три точки обучения.';
+  if (state.live_state==='waiting_signal') return 'Модели нужны пригодные кадры с обучающих радиолиний.';
+  if (state.live_state==='lines_changed') return 'Проверьте IP плат и канал роутера, использованные при записи точек.';
+  if (state.live_state==='background_failed') return 'Контроль пустой комнаты показал ложные оценки. Проверьте записи фона.';
+  if (state.live_reason==='near_background') return 'Сигнал близок к записи пустой комнаты.';
+  if (state.live_reason==='outside_calibration') return 'Сигнал вне обученных точек. Проверьте, загорается ли клетка, если встать на записанную отметку.';
+  return '';
+ }
+
  function positionAt(now) {
   const loc=now-(localization?.receivedAt??-Infinity)<2700?localization:null;
   const estimate=loc?.estimate;
@@ -148,19 +159,21 @@
    return {point:estimate.position,state:'estimated',source:'Локализация по CSI'};
   }
   if (estimate?.mode==='ab'||estimate?.state==='empty') return {state:estimate.state};
-  if (loc&&ranging?.dataset?.id===loc.dataset?.id&&now-ranging.receivedAt<2700&&ranging.model_ready) {
+  let detail='';
+  if (loc&&ranging?.dataset?.id===loc.dataset?.id&&now-ranging.receivedAt<2700) {
    const point=ranging.estimate?.position;
-   if (ranging.live_state==='estimated'&&layout?.cellAt(point)) {
+   if (ranging.model_ready&&ranging.live_state==='estimated'&&layout?.cellAt(point)) {
     return {point,state:'estimated',source:'Оценка по точкам дальности'};
    }
-   if (!loc.model_ready) return {state:ranging.live_state};
+   detail=rangingHint(ranging);
+   if (ranging.model_ready&&!loc.model_ready) return {state:ranging.live_state,detail};
   }
-  if (loc?.model_ready) return {state:estimate?.state??'unknown'};
+  if (loc?.model_ready) return {state:estimate?.state??'unknown',detail};
   if (now-(presence?.receivedAt??-Infinity)<2500&&presence.active_links>0) {
-   if (presence.state==='empty') return {state:'empty'};
-   if (presence.state==='moving'||presence.state==='still') return {state:presence.state};
+   if (presence.state==='empty') return {state:'empty',detail};
+   if (presence.state==='moving'||presence.state==='still') return {state:presence.state,detail};
   }
-  return {state:loc?estimate?.state??'untrained':'unknown'};
+  return {state:loc?estimate?.state??'untrained':'unknown',detail};
  }
 
  function accept(message) {
@@ -257,7 +270,7 @@
   const presenceLabel={moving:'Есть движение · зона неизвестна',still:'Присутствие · зона неизвестна'};
   text('position',!connection?'Нет связи с сервером':!layout?'Нужен план помещения':cell?`Клетка ${cell.label}`:
    presenceLabel[result.state]??estimateLabels[result.state]??'Зона не определена');
-  text('position-source',cell?result.source:'');
+  text('position-source',cell?result.source:layout?result.detail??'':'');
   if (view==='map') return;
   text('radio-title',`Сигнал ${RadioScene.names[view]}`);
   const ip=receivers[view];

@@ -45,9 +45,14 @@ test('uses a valid ranging estimate when the sector model cannot see its trained
  send('/ranging',{...distance,live_state:'waiting_signal'});
  draw(670);
  assert.equal(get('position').textContent,'Не хватает радиолиний');
- send('/ranging',{...distance,dataset:{id:'another-plan'}});
+ assert.match(get('position-source').textContent,/обучающих радиолиний/);
+ send('/ranging',{...distance,live_state:'unknown',live_reason:'outside_calibration',estimate:null});
  draw(810);
+ assert.match(get('position-source').textContent,/записанную отметку/);
+ send('/ranging',{...distance,dataset:{id:'another-plan'}});
+ draw(960);
  assert.equal(get('position').textContent,'Не хватает радиолиний');
+ assert.equal(get('position-source').textContent,'');
 });
 
 test('lays out square cells, clips the outline and leaves cutouts unoccupied', () => {

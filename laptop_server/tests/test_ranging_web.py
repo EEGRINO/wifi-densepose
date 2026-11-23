@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from csi_ranging import fit, layout
 from localization import Localization
 from ranging_web import EMPTY_CHECK, REFERENCE, RangingWeb
 
@@ -52,6 +53,42 @@ class RangingWebTests(unittest.TestCase):
         self.assertEqual(self.command("delete", id=target)["points"], [])
         self.web = RangingWeb(self.localization)
         self.assertEqual(self.command("status")["points"], [])
+
+    def test_live_ranging_uses_trained_lines_even_when_an_extra_line_appears(self):
+        base = np.tile(np.r_[np.ones(52), -.8, 2.5, np.full(52, .02)], 2)
+        point = base.copy()
+        point[52] += .25
+        self.feature = point.tolist()
+        self.command("status")
+        trained_lines = self.lines.copy()
+        model = fit(np.tile(base, (5, 1)), [np.tile(point, (5, 1))], [[1, 1]],
+                    layout(self.snapshot(self.now)), trained_lines, anchor_only=True)
+        self.web.save(model=model)
+
+        self.lines.append("192.168.31.186 <- 46D8 / ch6")
+        with patch.object(self.localization, "feature", return_value=point) as feature:
+            status = self.command("status")
+            self.assertEqual(status["live_state"], "estimated")
+            self.assertEqual(status["estimate"]["position"], [1, 1])
+            feature.assert_called_once_with(self.now, trained_lines)
+
+        self.lines.pop(0)
+        with patch.object(self.localization, "feature") as feature:
+            status = self.command("status")
+            self.assertEqual(status["live_state"], "lines_changed")
+            self.assertIsNone(status["estimate"])
+            feature.assert_not_called()
+
+        self.lines = trained_lines
+        self.feature = base.tolist()
+        status = self.command("status")
+        self.assertEqual(status["live_state"], "unknown")
+        self.assertEqual(status["live_reason"], "near_background")
+        point[52] += .6
+        self.feature = point.tolist()
+        status = self.command("status")
+        self.assertEqual(status["live_state"], "unknown")
+        self.assertEqual(status["live_reason"], "outside_calibration")
 
     def test_capture_then_train_and_verify_with_radios_disconnected(self):
         promoted = self.add(4, 4, "test")
