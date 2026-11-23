@@ -19,11 +19,19 @@ button{border:1px solid transparent;background:transparent;border-radius:7px;pad
 button:not(:disabled):hover,button[aria-pressed="true"]{background:#22364b;border-color:#3b536b}
 button:disabled,select:disabled{opacity:.45;cursor:default}
 button:focus-visible,select:focus-visible,canvas:focus-visible{outline:2px solid #9beaff;outline-offset:-2px}
+.view-controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+#full-view{border-color:var(--line);font-size:.8rem}
 .esp-a{color:var(--a)}.esp-b{color:var(--b)}
 .viewport{position:relative;background:#081119;border-block:1px solid var(--line)}
 #room{display:block;width:100%;height:clamp(360px,62vh,710px);touch-action:pan-y}
 #room[data-orbit="true"]{cursor:grab;touch-action:none}
 #room[data-orbit="true"]:active{cursor:grabbing}
+.viewport[data-expanded="true"]{position:fixed;inset:0;z-index:10;border:0;background:#000}
+.viewport:fullscreen{border:0;background:#000}
+.viewport[data-expanded="true"] #room,.viewport:fullscreen #room{width:100%;height:100%;outline:none}
+#exit-full-view{position:absolute;right:16px;bottom:16px;background:#132130;border-color:var(--line);opacity:.3}
+#exit-full-view:hover,#exit-full-view:focus-visible{opacity:1}
+@media(hover:none){#exit-full-view{opacity:1}}
 .empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;text-align:center;background:#0b151e}
 .empty p{margin:8px 0 14px;color:var(--muted)}
 .readout{padding:14px 16px;margin-bottom:12px}

@@ -4,8 +4,8 @@ const {join} = require('node:path');
 const {test} = require('node:test');
 const {runInNewContext} = require('node:vm');
 
-const scripts = ['room_editor.js','radioview_scene.js'].map(name=>readFileSync(join(__dirname,'../static',name),'utf8'));
-const RadioScene = runInNewContext(`${scripts.join('\n')}\nRadioScene`);
+const scripts = ['room_editor.js','visor_grain.js','radioview_scene.js'].map(name=>readFileSync(join(__dirname,'../static',name),'utf8'));
+const {RadioScene,VisorGrain}=runInNewContext(`${scripts.join('\n')}\n({RadioScene,VisorGrain})`,{atob});
 
 test('lays out square cells, clips the outline and leaves cutouts unoccupied', () => {
  const grid = RadioScene.grid({shape:'custom',boundary:[[1,1],[8,1],[8,4.1],[1,4.1]],cutouts:[[2,2,3,3]]});
@@ -40,4 +40,26 @@ test('keeps the active cell lit, fades earlier cells and clears on a layout chan
  assert.ok(trail.visible(4100)[0].alpha<1);
  trail.clear();
  assert.equal(trail.visible(4200).length,0);
+});
+
+test('decodes raw signed I/Q and changes visual texture when the raw signal changes', () => {
+ const iq=VisorGrain.decode(Buffer.from([128,0,255,127]).toString('base64'));
+ assert.deepEqual(Array.from(iq),[-128,0,-1,127]);
+ const original=VisorGrain.values(iq);
+ assert.ok(original.amplitude[0] > original.amplitude[1]);
+ iq[0]=127;
+ assert.notEqual(original.seed,VisorGrain.values(iq).seed);
+ assert.equal(VisorGrain.decode('!!!'),null);
+ assert.equal(VisorGrain.decode('AA=='),null);
+});
+
+test('requires a position and live pose to project a silhouette and hides it behind the view', () => {
+ const points=Array.from({length:16},(_,i)=>[.4+i*.01,.2+i*.03]);
+ const forward=([x,y])=>[200+x,320-y*100];
+ assert.equal(VisorGrain.projectPose(forward,null,points,600,450),null);
+ assert.equal(VisorGrain.projectPose(forward,[3,4],null,600,450),null);
+ assert.equal(VisorGrain.projectPose(()=>null,[3,4],points,600,450),null);
+ const projected=VisorGrain.projectPose(forward,[3,4],points,600,450);
+ assert.equal(projected.points.length,16);
+ assert.equal(projected.points[15][1],320);
 });

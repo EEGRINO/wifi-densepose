@@ -121,6 +121,8 @@ const RadioScene = (() => {
 
  function scene(canvas) {
   let layout=null, view='map', camera=null, from=null, moved=0, yaw=0, pitch=.18;
+  let darkness=0, fromDarkness=0;
+  const drawGrain=VisorGrain.grain();
   const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function select(mode, devices, aim, now) {
@@ -128,6 +130,7 @@ const RadioScene = (() => {
    if (mode!=='map'&&(!layout||!node)) return false;
    if (mode===view) return true;
    from=reducedMotion?null:camera;
+   fromDarkness=darkness;
    moved=now;
    view=mode;
    if (node) {
@@ -139,7 +142,7 @@ const RadioScene = (() => {
    return true;
   }
 
-  function draw(now,devices,trail,person,radio) {
+  function draw(now,devices,trail,person,radio,joints) {
    const surface=canvasContext(canvas);
    if (!surface||!layout) return;
    const {ctx,w,h}=surface, node=devices[view];
@@ -151,6 +154,13 @@ const RadioScene = (() => {
    camera=from&&t<1?{x:mix(from.x,goal.x,ease),y:mix(from.y,goal.y,ease),z:mix(from.z,goal.z,ease),
     yaw:from.yaw+angle(goal.yaw-from.yaw)*ease,pitch:mix(from.pitch,goal.pitch,ease)}:goal;
    const projection=projector(camera,w,h);
+   const goalDarkness=node?1:0;
+   darkness=from&&t<1?mix(fromDarkness,goalDarkness,ease):goalDarkness;
+   if (darkness===1) {
+    const pose=VisorGrain.projectPose(projection.point,person,joints,w,h);
+    drawGrain(ctx,w,h,radio,pose);
+    return;
+   }
    const polygon=(points,y=0)=>projection.path(ctx,points.map(p=>flat(p,y)),true);
 
    ctx.beginPath();
@@ -183,36 +193,6 @@ const RadioScene = (() => {
    for (const ring of layout.rings) polygon(ring);
    ctx.strokeStyle='#7896ac';ctx.lineWidth=1.5;ctx.stroke();
 
-   function line(points,color,weight,dash=[],offset=0) {
-    ctx.beginPath();
-    if (!projection.path(ctx,points,false)) return;
-    ctx.strokeStyle=color;ctx.lineWidth=weight;ctx.setLineDash(dash);ctx.lineDashOffset=offset;ctx.stroke();ctx.setLineDash([]);
-   }
-   if (node||t<1&&from) {
-    for (const ring of layout.rings) {
-     ctx.beginPath();
-     polygon(ring,2.2);
-     ctx.strokeStyle='#345265';ctx.lineWidth=1;ctx.stroke();
-     // Draw vertical references at major corners without treating samples along curves as studs.
-     const stride=Math.max(1,Math.ceil(ring.length/9));
-     ring.filter((_,i)=>i%stride===0).forEach(p=>line([flat(p),flat(p,2.2)],'#345265',1));
-    }
-   }
-
-   if (node&&person&&radio) {
-    const target=flat(person,1.05), router=devices.router;
-    const strength=Number.isFinite(radio.rssi)?clamp((radio.rssi+95)/65,0,1):.4;
-    const tone=colors[view];
-    const receiver=flat(node.position,Math.max(.15,node.height??1.15));
-    const phase=reducedMotion?0:-(now/36)%14;
-    if (router) line([flat(router.position,Math.max(.15,router.height??1.15)),target],tone,1+strength*1.8,[7,7],phase);
-    line([target,receiver],tone,1+strength*1.8,[7,7],phase);
-    const p=projection.point(target);
-    if (p) {
-     ctx.beginPath();ctx.arc(...p,5+3*strength,0,TAU);
-     ctx.fillStyle='#82ffc1';ctx.fill();
-    }
-   }
    ctx.textAlign='left';ctx.textBaseline='middle';ctx.font='600 12px system-ui';
    for (const [key,device] of Object.entries(devices)) {
     if (key===view||!colors[key]) continue;
@@ -222,11 +202,12 @@ const RadioScene = (() => {
     ctx.lineWidth=3;ctx.strokeStyle='#0a1721';ctx.strokeText(names[key],p[0]+9,p[1]-8);
     ctx.fillText(names[key],p[0]+9,p[1]-8);
    }
+   if (darkness>0) drawGrain(ctx,w,h,radio,null,darkness);
   }
 
   return {
    select,draw,
-   setLayout(next) {layout=next;view='map';from=null;camera=null;},
+   setLayout(next) {layout=next;view='map';from=null;camera=null;darkness=0;},
    rotate(dx,dy) {yaw=angle(yaw+dx);pitch=clamp(pitch+dy,-1.15,1.3);},
    heading() {return (Math.round(yaw*180/Math.PI)+360)%360;}
   };

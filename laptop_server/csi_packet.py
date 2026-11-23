@@ -36,6 +36,12 @@ _RUV2_HDR = struct.Struct("<4sIIbbBBHH")
 _RUV1_HDR = struct.Struct("<4sIbBH")
 
 
+def wire_iq(data: bytes) -> bytes:
+    """Return signed interleaved I/Q bytes as received in a valid RUV2 packet."""
+    n = _RUV2_HDR.unpack_from(data)[7]
+    return data[_RUV2_HDR.size:_RUV2_HDR.size + 2 * n]
+
+
 @dataclass
 class CsiFrame:
     version: int

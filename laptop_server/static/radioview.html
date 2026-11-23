@@ -6,6 +6,7 @@
  <title>Радиовизор · WiFi DensePose</title>
  <link rel="stylesheet" href="radioview.css">
  <script defer src="room_editor.js"></script>
+ <script defer src="visor_grain.js"></script>
  <script defer src="radioview_scene.js"></script>
  <script defer src="radioview.js"></script>
 </head>
@@ -23,10 +24,12 @@
      <button type="button" id="esp1-view" class="esp-a" aria-pressed="false" disabled>ESP A</button>
      <button type="button" id="esp2-view" class="esp-b" aria-pressed="false" disabled>ESP B</button>
     </div>
-    <output id="view-label">План помещения</output>
+    <div class="view-controls"><output id="view-label">План помещения</output>
+     <button type="button" id="full-view" hidden>На весь экран</button></div>
    </div>
-   <div class="viewport">
+   <div class="viewport" id="viewport">
     <canvas id="room" tabindex="0" aria-label="Карта помещения. В режиме ESP вращайте обзор стрелками или перетаскиванием."></canvas>
+    <button type="button" id="exit-full-view" hidden>Свернуть</button>
     <div id="no-plan" class="empty" hidden>
      <strong>Сохраните контур помещения</strong>
      <p>Сетка появится автоматически после сохранения плана.</p>
@@ -50,13 +53,14 @@
    <section class="panel readout" id="radio-panel" hidden>
     <h2 id="radio-title">Сигнал</h2>
     <p id="radio-status" class="muted" role="status"></p>
-    <canvas id="spectrum" aria-label="Нормированная амплитуда поднесущих CSI"></canvas>
-    <p class="muted graph-label">Нормированная амплитуда CSI</p>
+    <canvas id="spectrum" aria-label="Амплитуда принятых отсчётов I/Q"></canvas>
+    <p class="muted graph-label">Амплитуда исходных I/Q</p>
     <div class="pose" id="pose-panel" hidden>
      <h3>Оценка позы</h3>
      <canvas id="pose" aria-label="Плоская оценка суставов по CSI"></canvas>
     </div>
     <p id="pose-status" class="muted"></p>
+    <a id="pose-calibration" class="muted" href="camera_calib.html" hidden>Калибровка позы основного ESP</a>
    </section>
   </aside>
  </div>

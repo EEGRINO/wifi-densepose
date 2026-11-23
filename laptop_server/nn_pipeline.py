@@ -15,6 +15,7 @@ import csi_packet
 from presence import PresenceDetector
 from localization import Localization
 from ranging_web import RangingWeb
+from visor_csi import VisorCsi
 
 # ── КОНФИГУРАЦИЯ ──────────────────────────────────────────────────────────────
 UDP_IP   = "0.0.0.0"
@@ -44,6 +45,7 @@ connected_clients: set = set()
 localization_clients: set = set()
 localization = Localization(os.path.join(_HERE, "localization_data"))
 ranging_web = RangingWeb(localization)
+visor_csi = VisorCsi()
 
 
 # Диагностика: UDP есть, но в браузер не уходит (раз в ~15 с)
@@ -1691,18 +1693,19 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
             t_wall = time.time()
             pkt_count += len(everything)
 
-            latest: dict[str, tuple[bytes, object]] = {}
+            latest = {}
             for d, a in everything:
                 fr = csi_packet.parse(d)
                 if fr is None:
                     continue
                 presence.add(a[0], fr, t_wall)
                 localization.add(a[0], fr, now, raw_packet=d)
+                visor_key = visor_csi.add(a[0], fr, d, now)
                 if not fr.from_node:
-                    latest[a[0]] = (d, a)
+                    latest[a[0]] = (d, a, visor_key)
             batch = list(latest.values())
 
-            for data, addr in sorted(
+            for data, addr, visor_key in sorted(
                 batch,
                 key=lambda da: (1 if _should_apply_udp_side_effects(da[1][0]) else 0, da[1][0]),
             ):
@@ -1717,6 +1720,8 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
                 parsed = parse_ruview_packet(data, source_ip=src)
                 if not parsed:
                     continue
+                if parsed["csi_primary"]:
+                    visor_csi.set_pose(visor_key, parsed["skeleton"])
                 parsed["csi_received_ms"] = t_wall * 1000
                 if not connected_clients:
                     if now - _last_log_no_ws >= 15.0:
@@ -1809,6 +1814,18 @@ async def ws_handler(websocket):
     path = request.path if request is not None else getattr(websocket, "path", "")
     if path == "/ranging":
         await ranging_ws_handler(websocket)
+        return
+    if path == "/visor":
+        try:
+            async for message in websocket:
+                try:
+                    command = json.loads(message)
+                except (ValueError, UnicodeError):
+                    continue
+                if isinstance(command, dict) and command.get("cmd") == "visor_snapshot":
+                    await websocket.send(_udp_payload_to_json(visor_csi.snapshot(time.monotonic())))
+        except websockets.exceptions.ConnectionClosed:
+            pass
         return
 
     connected_clients.add(websocket)
