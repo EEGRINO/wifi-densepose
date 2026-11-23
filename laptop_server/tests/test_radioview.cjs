@@ -7,6 +7,49 @@ const {runInNewContext} = require('node:vm');
 const scripts = ['room_editor.js','visor_grain.js','radioview_scene.js'].map(name=>readFileSync(join(__dirname,'../static',name),'utf8'));
 const {RadioScene,VisorGrain}=runInNewContext(`${scripts.join('\n')}\n({RadioScene,VisorGrain})`,{atob});
 
+test('uses a valid ranging estimate when the sector model cannot see its trained lines', () => {
+ const elements=new Map(), sockets=new Map();
+ const get=id=>{
+  if (!elements.has(id)) elements.set(id,{dataset:{},addEventListener(){},setAttribute(){},replaceChildren(){}});
+  return elements.get(id);
+ };
+ let draw;
+ class Socket {
+  constructor(url) {sockets.set(new URL(url).pathname,this);}
+  send() {}
+ }
+ const scene={setLayout(){},select(){return true;},draw(){}};
+ runInNewContext(readFileSync(join(__dirname,'../static/radioview.js'),'utf8'),{
+  RadioScene:{...RadioScene,scene:()=>scene}, VisorGrain,
+  document:{getElementById:get,addEventListener(){}}, location:{hostname:'127.0.0.1'},
+  WebSocket:Socket, Option:class {}, setInterval(){}, performance:{now:()=>100},
+  requestAnimationFrame:callback=>{draw=callback;},
+ });
+ const send=(path,message)=>sockets.get(path).onmessage({data:JSON.stringify(message)});
+ sockets.get('/').onopen();
+ const sectors={type:'localization',dataset:{id:'test'},room:{width:6,depth:4},devices:{},model_ready:true,
+  estimate:{state:'missing_lines'}};
+ const distance={type:'ranging_web',dataset:sectors.dataset,model_ready:true,live_state:'estimated',estimate:{position:[3.4,2.5]}};
+ send('/',sectors);
+ send('/ranging',distance);
+ draw(240);
+ assert.equal(get('position').textContent,'Клетка D3');
+ assert.equal(get('position-source').textContent,'Оценка по точкам дальности');
+ send('/',{...sectors,estimate:{state:'ab_present_unknown',mode:'ab'}});
+ draw(380);
+ assert.equal(get('position').textContent,'Зона не определена');
+ send('/',{...sectors,estimate:{state:'empty'}});
+ draw(520);
+ assert.equal(get('position').textContent,'Пустая комната');
+ send('/',sectors);
+ send('/ranging',{...distance,live_state:'waiting_signal'});
+ draw(670);
+ assert.equal(get('position').textContent,'Не хватает радиолиний');
+ send('/ranging',{...distance,dataset:{id:'another-plan'}});
+ draw(810);
+ assert.equal(get('position').textContent,'Не хватает радиолиний');
+});
+
 test('lays out square cells, clips the outline and leaves cutouts unoccupied', () => {
  const grid = RadioScene.grid({shape:'custom',boundary:[[1,1],[8,1],[8,4.1],[1,4.1]],cutouts:[[2,2,3,3]]});
  assert.equal(grid.size,1);

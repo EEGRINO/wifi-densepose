@@ -147,12 +147,15 @@
   if (estimate?.state==='estimated'&&layout?.cellAt(estimate.position)) {
    return {point:estimate.position,state:'estimated',source:'Локализация по CSI'};
   }
-  if (loc?.model_ready||estimate?.mode==='ab') return {state:estimate?.state??'unknown'};
+  if (estimate?.mode==='ab'||estimate?.state==='empty') return {state:estimate.state};
   if (loc&&ranging?.dataset?.id===loc.dataset?.id&&now-ranging.receivedAt<2700&&ranging.model_ready) {
    const point=ranging.estimate?.position;
-   if (layout?.cellAt(point)) return {point,state:'estimated',source:'Оценка по точкам дальности'};
-   return {state:ranging.live_state};
+   if (ranging.live_state==='estimated'&&layout?.cellAt(point)) {
+    return {point,state:'estimated',source:'Оценка по точкам дальности'};
+   }
+   if (!loc.model_ready) return {state:ranging.live_state};
   }
+  if (loc?.model_ready) return {state:estimate?.state??'unknown'};
   if (now-(presence?.receivedAt??-Infinity)<2500&&presence.active_links>0) {
    if (presence.state==='empty') return {state:'empty'};
    if (presence.state==='moving'||presence.state==='still') return {state:presence.state};
@@ -267,9 +270,15 @@
   if (joints) RadioScene.drawPose(byId('pose'),joints);
   const awaitingCalibration=radio?.hasSignal&&!radio.peer&&ip===primaryIp&&!radio.pose;
   byId('pose-calibration').hidden=!awaitingCalibration;
-  text('pose-status',joints?'Силуэт по экспериментальной 2D-оценке.':!radio?.hasSignal?'':!cell?
-   'Для размещения силуэта нужна оценка положения.':awaitingCalibration?'Нужна калибровка позы.':
-   'Для этого потока доступно только зерно CSI.');
+  let poseStatus='';
+  if (joints) poseStatus='Силуэт по экспериментальной 2D-оценке.';
+  else if (radio?.hasSignal) {
+   if (!cell) poseStatus='Для размещения силуэта нужна оценка положения.';
+   else if (primaryIp&&ip!==primaryIp) poseStatus=`Для силуэта выберите основной ESP с IP ${primaryIp}.`;
+   else if (awaitingCalibration) poseStatus='Нужна калибровка позы.';
+   else poseStatus='Ожидание пригодной оценки позы.';
+  }
+  text('pose-status',poseStatus);
  }
 
  function frame(now) {
