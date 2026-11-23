@@ -55,7 +55,10 @@ class RuDiscoverListener(ServiceListener):
         info = zc.get_service_info(type_, name)
         if not info or not info.addresses:
             return
-        ip = socket.inet_ntoa(info.addresses[0])
+        address = next((address for address in info.addresses if len(address) == 4), None)
+        if address is None:
+            return
+        ip = socket.inet_ntoa(address)
         props = _decode_props(info)
         if props.get("app") == "ruview" or "ruview" in name.lower():
             self._on(ip, int(info.port), props)
@@ -93,6 +96,9 @@ class WsThread(QObject):
         while not self._stop.is_set():
             try:
                 ws = create_connection(self._url, timeout=5)
+                if self._stop.is_set():
+                    ws.close()
+                    return
                 self.status.emit("live")
                 ws.settimeout(0.4)
                 while not self._stop.is_set():
@@ -111,8 +117,9 @@ class WsThread(QObject):
                         continue
                 ws.close()
             except Exception as e:
-                self.status.emit(f"error: {e}")
-                time.sleep(1.2)
+                if not self._stop.is_set():
+                    self.status.emit(f"error: {e}")
+                    self._stop.wait(1.2)
             if not self._stop.is_set():
                 self.status.emit("reconnect…")
 
@@ -226,6 +233,7 @@ class GraphWidget(QWidget):
 
 
 class MainWindow(QMainWindow):
+    service_discovered = pyqtSignal(str, int, dict)
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("RuView Ultimate — Desktop")
@@ -297,6 +305,7 @@ class MainWindow(QMainWindow):
         btn_scan.clicked.connect(self._start_scan)
         btn_go.clicked.connect(self._connect_ws)
         btn_cal.clicked.connect(self._calibrate)
+        self.service_discovered.connect(self._on_discovered, Qt.ConnectionType.QueuedConnection)
 
         self._discovered: dict[str, int] = {}
 
@@ -329,7 +338,7 @@ class MainWindow(QMainWindow):
         self._discovered.clear()
         self._zeroconf = Zeroconf()
         self._browser = ServiceBrowser(
-            self._zeroconf, "_http._tcp.local.", RuDiscoverListener(self._on_discovered)
+            self._zeroconf, "_http._tcp.local.", RuDiscoverListener(self.service_discovered.emit)
         )
 
     def _on_discovered(self, ip: str, port: int, props: dict) -> None:
@@ -350,18 +359,20 @@ class MainWindow(QMainWindow):
             self._ws_worker.deleteLater()
             self._ws_worker = None
 
-    def _connect_ws(self) -> None:
-        self._stop_ws()
+    def _target(self) -> tuple[str, int]:
         ip = self._host.text().strip()
         port = self._port.value()
-        if self._combo.currentData():
-            key = str(self._combo.currentData())
-            if key in self._discovered:
-                ip, _, p = key.partition(":")
-                port = int(p) if p else port
+        key = self._combo.currentData()
+        if not ip and key in self._discovered:
+            return key.partition(":")[0], self._discovered[key]
+        return ip, port
+
+    def _connect_ws(self) -> None:
+        ip, port = self._target()
         if not ip:
             QMessageBox.warning(self, "RuView", "Укажите IP или выберите устройство из списка.")
             return
+        self._stop_ws()
         url = f"ws://{ip}:{port}/ws"
         self._ws_worker = WsThread(url)
         self._ws_worker.frame.connect(self._on_frame)
@@ -382,13 +393,7 @@ class MainWindow(QMainWindow):
             self._rssi.setText(f"RSSI: {r} dBm")
 
     def _calibrate(self) -> None:
-        ip = self._host.text().strip()
-        port = self._port.value()
-        if self._combo.currentData():
-            key = str(self._combo.currentData())
-            if key in self._discovered:
-                ip, _, p = key.partition(":")
-                port = int(p) if p else port
+        ip, port = self._target()
         if not ip:
             QMessageBox.warning(self, "RuView", "Нужен IP устройства.")
             return

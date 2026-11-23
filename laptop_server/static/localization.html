@@ -35,7 +35,7 @@ table{border-collapse:collapse;width:100%}.scroll{max-height:270px;overflow:auto
 <h1>Положение человека в комнате</h1>
 <p class="muted">Один человек · CSI от двух ESP · обучение на записях в этой комнате.
 Точка — выбранное опорное место по сходству CSI, а не точные непрерывные координаты. Кошку на время записей уберите.</p>
-<span id="connection" class="badge">Подключение…</span><a href="map3d.html">Основной экран</a>
+<span id="connection" class="badge">Подключение…</span><a href="map3d.html">Основной экран</a> · <a href="ranging.html">Калибровка расстояний</a>
 </header>
 <div class="card">
 <h2>Набор записей</h2>
@@ -181,14 +181,16 @@ SNR не показывается. Это не спектроанализато�
 </div>
 </div>
 <div class="card">
-<h2>3. Обучение и проверка</h2>
+<h2>3. Обучение секторов</h2>
+<p class="muted" id="rangingTraining">Записи расстояний открываются на <a href="ranging.html">странице калибровки расстояний</a>.</p>
 <p class="muted">Минимум: по две отдельные обучающие записи в двух точках и две записи «Пусто».
 Лучше покрыть все сектора. Затем сделайте отдельные записи с назначением «Независимая проверка».
 Для проверки непрерывных координат добавьте места между обучающими точками.</p>
 <label style="margin-bottom:12px">Алгоритм<select id="algorithm"><option value="ridge">Линейный (текущий)</option><option value="svm">SVM RBF — эксперимент</option><option value="ridge_rssi">Ridge — только RSSI (контроль)</option><option value="ridge_csi_change">Ridge — изменение CSI от пустой комнаты</option></select></label>
 <p class="muted">Смена алгоритма применяется после «Обучить». Исходные записи сохраняются.
 Контроль RSSI использует уровень сигнала. «Изменение CSI» сравнивает форму CSI с обучающим эталоном пустой комнаты. Устойчивость каждого режима нужно проверить на новых записях.</p>
-<button id="train" class="primary">Обучить по записям</button>
+<button id="train" class="primary" disabled>Обучить модель секторов</button>
+<p id="sectorTrainStatus" class="muted" role="status"></p>
 <p id="report" class="muted"></p>
 <p class="muted">После перезапуска записи сохраняются; нажмите «Обучить» для восстановления модели.
 «Зоны» на странице калибровки позы — части тела, они не используются здесь как сектора комнаты.</p>
@@ -389,7 +391,16 @@ $('visitB').onclick=()=>send('localization_visit_b');
 $('cancel').onclick=()=>send('localization_cancel');
 $('abStart').onclick=()=>send('localization_ab_start');
 $('abStop').onclick=()=>send('localization_ab_stop');
-$('train').onclick=()=>send('localization_train',{algorithm:$('algorithm').value||'ridge'});
+function opensRanging(s){return !!s?.ranging_points&&!s.can_train;}
+$('train').onclick=()=>{
+ if(opensRanging(state)){
+  location.assign('ranging.html?train='+encodeURIComponent(state.dataset.id));
+  return;
+ }
+ if(!state?.can_train)return;
+ $('sectorTrainStatus').textContent='Обучаю модель секторов…';
+ send('localization_train',{algorithm:$('algorithm').value||'ridge'});
+};
 function render(s){
  state=s;
  plan.sync(s,ws?.readyState===1);
@@ -407,7 +418,8 @@ function render(s){
   $('datasetSelect').value=dataset.id;
  }
  $('datasetName').textContent='Открыт: '+dataset.name+' · '+s.sessions.length+' записей';
- $('newDataset').disabled=!!s.recording;$('openDataset').disabled=!!s.recording;
+ $('newDataset').disabled=$('openDataset').disabled=!!s.recording||!!s.ranging_recording;
+ $('rangingTraining').hidden=!s.ranging_points;
  const control=dataset.id!=='original';
  $('guideBox').hidden=false;
  const step=s.sessions.filter(v=>v.role==='train').length;
@@ -438,7 +450,7 @@ function render(s){
   row.textContent=info.name+': '+(device?'X '+device.position[0].toFixed(2)+' м, Z '+device.position[1].toFixed(2)+' м'+(device.height===null?'':' · высота '+device.height+' м'):'не размещён');
   $('deviceSummary').appendChild(row);
  }
- const lock=!!(s.recording||s.sessions.length);
+ const lock=!!(s.recording||s.ranging_recording||s.sessions.length);
  for(const id of ['deviceX','deviceZ','deviceHeight','saveDevice','removeDevice'])$(id).disabled=mapMode()==='person'||lock;
  $('notice').textContent=s.message;
  const c=s.recording;
@@ -446,10 +458,14 @@ function render(s){
  $('timer').textContent=c?(c.phase==='waiting'?'Займите место / выйдите: ':'Запись: ')+c.left_s+' с · окон '+c.windows+((c.role==='diagnostic'||c.role==='visit')&&Number.isFinite(c.raw_packet_count)?' · сырых пакетов '+c.raw_packet_count:''):'Запись не идёт';
  if(c&&c.visit_instruction)$('timer').textContent=c.visit_instruction+' · '+c.visit_step_left_s+' с. '+$('timer').textContent;
  const receivers=new Set(s.active_lines.map(line=>line.split(' <- ')[0]));
- const visitUnavailable=!!c||receivers.size<2||!s.room||!!(s.quality&&s.quality.blocked);
+ const visitUnavailable=!!c||s.ranging_recording||receivers.size<2||!s.room||!!(s.quality&&s.quality.blocked);
  $('visitA').disabled=visitUnavailable||!inside(s.room,1,.92);
  $('visitB').disabled=visitUnavailable||!inside(s.room,5.35,.72);
- $('record').disabled=!!c||receivers.size<2||mapMode()!=='person';$('cancel').disabled=!c;$('train').disabled=!!c;
+ $('record').disabled=!!c||!!s.ranging_recording||receivers.size<2||mapMode()!=='person';$('cancel').disabled=!c;
+ $('train').textContent=opensRanging(s)?'Обучить по точкам расстояний':'Обучить модель секторов';
+ $('algorithm').disabled=opensRanging(s);
+ $('train').disabled=!!c||!!s.ranging_recording||(!s.can_train&&!opensRanging(s))||ws?.readyState!==1;
+ if(s.action==='localization_train')$('sectorTrainStatus').textContent='Модель секторов обучена.';
  if(receivers.size<2&&!c)$('timer').textContent='Ожидаются данные от двух ESP — запись недоступна';
  const ab=s.ab_preview;
  $('abControls').hidden=!s.ab_available&&!ab;
@@ -514,8 +530,11 @@ function render(s){
 function connect(){
  ws=new WebSocket('ws://'+(location.hostname||'127.0.0.1')+':8765');
  ws.onopen=()=>{$('connection').textContent='Сервер подключён';send('localization_status');};
- ws.onmessage=ev=>{try{const d=JSON.parse(ev.data);if(d.type==='localization')render(d);if(d.type==='localization_error'&&!plan.error(d.message))$('error').textContent=d.message;}catch(err){console.error(err);}};
- ws.onclose=()=>{plan.disconnected();if(state)plan.sync(state,false);$('connection').textContent='Соединение потеряно — переподключение';$('estimate').textContent='Нет связи с сервером';$('qualitySummary').textContent='Нет связи с сервером — показатели приёма неактуальны';$('record').disabled=true;$('visitA').disabled=true;$('visitB').disabled=true;$('abStart').disabled=true;$('abStop').disabled=true;$('abStatus').textContent='Нет связи с сервером';if(state){state.estimate={state:'unknown',position:null};draw();}setTimeout(connect,2000);};
+ ws.onmessage=ev=>{try{const d=JSON.parse(ev.data);if(d.type==='localization')render(d);if(d.type==='localization_error'){
+  if(d.action==='localization_train')$('sectorTrainStatus').textContent=d.message;
+  else if(!plan.error(d.message))$('error').textContent=d.message;
+ }}catch(err){console.error(err);}};
+ ws.onclose=()=>{plan.disconnected();if(state)plan.sync(state,false);$('connection').textContent='Соединение потеряно — переподключение';$('estimate').textContent='Нет связи с сервером';$('qualitySummary').textContent='Нет связи с сервером — показатели приёма неактуальны';$('record').disabled=true;$('train').disabled=true;$('visitA').disabled=true;$('visitB').disabled=true;$('abStart').disabled=true;$('abStop').disabled=true;$('abStatus').textContent='Нет связи с сервером';if(state){state.estimate={state:'unknown',position:null};draw();}setTimeout(connect,2000);};
  ws.onerror=()=>{$('connection').textContent='Нет соединения';};
 }
 connect();

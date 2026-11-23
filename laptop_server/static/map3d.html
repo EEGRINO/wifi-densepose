@@ -2848,10 +2848,11 @@ let recPersonIdx = -1;
 
 function startPersonRec(p, forceLabel = null) {
   const label = forceLabel ?? persons[p].activity;
+  const seconds = persons[p].duration || duration;
+  if (!send({ cmd: 'calibrate_start', label, n_people: nPeople, duration: seconds })) return;
   recPersonIdx  = p;
   recLabel      = label;
-  recDuration   = persons[p].duration || duration;
-  send({ cmd: 'calibrate_start', label, n_people: nPeople, duration: recDuration });
+  recDuration   = seconds;
   // Подсветить нужную кнопку записи
   document.querySelectorAll('.pcfg-cal-rec').forEach(b => b.classList.remove('recording'));
   const specific = document.getElementById(`pcalrec-${p}-${label}`);
@@ -2861,7 +2862,7 @@ function startPersonRec(p, forceLabel = null) {
 // ── Reset all calibration data ────────────────────────────────
 function clearAll() {
   if (!confirm('Сбросить ВСЕ данные калибровки и обученную модель?')) return;
-  send({ cmd: 'clear_all' });
+  if (!send({ cmd: 'clear_all' })) return;
   document.getElementById('train-result').textContent = '';
   document.getElementById('train-result').className   = '';
 }
@@ -3421,10 +3422,11 @@ function send(obj) {
   const te = document.getElementById('top-err');
   if (!ws || ws.readyState !== 1) {
     if (te) te.textContent = 'Нет WebSocket (ожидайте «live» вверху).';
-    return;
+    return false;
   }
   if (te) te.textContent = '';
   ws.send(JSON.stringify(obj));
+  return true;
 }
 
 function startEmptyRoomCalibration() {
@@ -3489,18 +3491,30 @@ function cancelEmptyRoomCalibration() {
 }
 
 function startRec(label) {
+  if (!send({ cmd: 'calibrate_start', label, n_people: nPeople, duration })) return;
   recLabel    = label;
   recDuration = duration;
-  send({ cmd: 'calibrate_start', label, n_people: nPeople, duration });
 }
 function stopRec()  { send({ cmd: 'calibrate_stop' }); hideRecProgress(); recLabel = null; }
 function clearClass(label) { send({ cmd: 'clear_class', label }); }
-function trainModel() {
+let activityTrainTimeout = null;
+function showActivityTrainResult(message, success) {
   const btn = document.getElementById('train-btn');
   const res = document.getElementById('train-result');
-  btn.disabled  = true; btn.textContent = '⏳ Обучение…';
-  res.textContent = ''; res.className = '';
-  send({ cmd: 'train' });
+  clearTimeout(activityTrainTimeout);
+  activityTrainTimeout = null;
+  btn.disabled = false; btn.textContent = '▶ Обучить модель';
+  res.textContent = message; res.className = success ? 'ok' : 'err';
+}
+function trainModel() {
+  if (!send({ cmd: 'train' })) {
+    showActivityTrainResult('Запустите локальный сервер и дождитесь подключения.', false);
+    return;
+  }
+  const btn = document.getElementById('train-btn');
+  btn.disabled = true; btn.textContent = '⏳ Обучение…';
+  document.getElementById('train-result').textContent = '';
+  activityTrainTimeout = setTimeout(() => showActivityTrainResult('Сервер не подтвердил результат. Повторите обучение.', false), 15000);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3616,6 +3630,7 @@ document.getElementById('pp-rebase-btn').addEventListener('click', () => {
     _wsOpenMs = 0;
     hideRecProgress();
     hideLimbRecProgress();
+    if (activityTrainTimeout !== null) showActivityTrainResult('Связь с сервером прервалась. Повторите обучение после подключения.', false);
       setTimeout(connect, 2000);
     };
   ws.onerror = () => { document.getElementById('top-err').textContent = 'WS error · порт 8765'; };
@@ -3705,11 +3720,7 @@ document.getElementById('pp-rebase-btn').addEventListener('click', () => {
         return;
       }
       if (o.type === 'train_result') {
-        const btn = document.getElementById('train-btn');
-        const res = document.getElementById('train-result');
-        btn.disabled = false; btn.textContent = '▶ Обучить модель';
-        res.textContent = o.message;
-        res.className   = o.success ? 'ok' : 'err';
+        showActivityTrainResult(o.message, o.success);
         updateCountsUI(o.n_samples);
         return;
       }

@@ -14,11 +14,13 @@ from typing import Any
 import csi_packet
 from presence import PresenceDetector
 from localization import Localization
+from ranging_web import RangingWeb
 
 # ── КОНФИГУРАЦИЯ ──────────────────────────────────────────────────────────────
 UDP_IP   = "0.0.0.0"
 UDP_PORT = 8080
 WS_PORT  = 8765
+LIVE_WRITE_LIMIT = 64 * 1024
 
 # Несколько ESP: калибровка активности/конечностей, vitals, карта комнаты — только с «основного».
 # Пустая строка: первый увиденный по UDP IP закрепляется до перезапуска nn_pipeline.
@@ -41,6 +43,7 @@ MODEL_PATH = os.path.join(_HERE, "models", "model-q4.bin")
 connected_clients: set = set()
 localization_clients: set = set()
 localization = Localization(os.path.join(_HERE, "localization_data"))
+ranging_web = RangingWeb(localization)
 
 
 # Диагностика: UDP есть, но в браузер не уходит (раз в ~15 с)
@@ -1385,12 +1388,27 @@ def parse_ruview_packet(data: bytes, *, source_ip: str | None = None) -> dict | 
 # WEBSOCKET COMMAND HANDLER
 # ══════════════════════════════════════════════════════════════════════════════
 
+def add_ranging_summary(status):
+    try:
+        ranging_web.load()
+    except (OSError, ValueError):
+        return status
+    return {**status, "ranging_points": len(ranging_web.data["points"]),
+            "ranging_recording": ranging_web.recording is not None}
+
+
 async def handle_cmd(cmd: dict, ws):
     action = cmd.get("cmd", "")
+
+    if action == "ranging_status":
+        await ws.send(_udp_payload_to_json(localization.ranging_snapshot(time.monotonic())))
+        return
 
     if isinstance(action, str) and action.startswith("localization_"):
         localization_clients.add(ws)
         try:
+            if action != "localization_status" and ranging_web.recording:
+                raise ValueError("Идёт запись на странице калибровки расстояний.")
             if action == "localization_dataset_new":
                 localization.new_dataset()
             elif action == "localization_dataset_open":
@@ -1427,9 +1445,10 @@ async def handle_cmd(cmd: dict, ws):
                 localization.stop_ab_preview()
             elif action != "localization_status":
                 raise ValueError("Неизвестная команда локализации")
-            await ws.send(_udp_payload_to_json(localization.status(time.monotonic())))
+            status = add_ranging_summary(localization.status(time.monotonic()))
+            await ws.send(_udp_payload_to_json({**status, "action": action}))
         except (ValueError, TypeError, OSError, ImportError) as error:
-            await ws.send(json.dumps({"type": "localization_error", "message": str(error)}))
+            await ws.send(json.dumps({"type": "localization_error", "message": str(error), "action": action}))
         return
 
     if action == "calibrate_start":
@@ -1620,7 +1639,7 @@ async def handle_cmd(cmd: dict, ws):
         delay = max(0, min(60, int(cmd.get("delay", 15))))
         presence.start_calibration(seconds, time.time(), delay=delay)
         print(f"🧭 Калибровка присутствия: через {delay} с, длительность {seconds} с — комната должна быть пуста")
-        await _broadcast_json({"type": "presence_ack", "status": "started", "seconds": seconds, "delay": delay})
+        await broadcast_presence_ack(ws, {"type": "presence_ack", "status": "started", "seconds": seconds, "delay": delay})
 
     elif action == "presence_rebaseline":
         if not presence.calibrated:
@@ -1630,11 +1649,11 @@ async def handle_cmd(cmd: dict, ws):
         delay = max(0, min(60, int(cmd.get("delay", 15))))
         presence.start_calibration(seconds, time.time(), delay=delay, profile_only=True)
         print(f"🧭 Обновление эталона: через {delay} с, длительность {seconds} с — комната должна быть пуста")
-        await _broadcast_json({"type": "presence_ack", "status": "rebaseline_started", "seconds": seconds, "delay": delay})
+        await broadcast_presence_ack(ws, {"type": "presence_ack", "status": "rebaseline_started", "seconds": seconds, "delay": delay})
 
     elif action == "presence_cancel":
         presence.cancel_calibration()
-        await _broadcast_json({"type": "presence_ack", "status": "cancelled"})
+        await broadcast_presence_ack(ws, {"type": "presence_ack", "status": "cancelled"})
 
     elif action == "get_status":
         await ws.send(json.dumps({
@@ -1698,6 +1717,7 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
                 parsed = parse_ruview_packet(data, source_ip=src)
                 if not parsed:
                     continue
+                parsed["csi_received_ms"] = t_wall * 1000
                 if not connected_clients:
                     if now - _last_log_no_ws >= 15.0:
                         _last_log_no_ws = now
@@ -1713,11 +1733,7 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
                         _last_log_json_err = now
                         print(f"⚠️  JSON для WebSocket (CSI): {je}")
                     continue
-                clients = list(connected_clients)
-                await asyncio.gather(
-                    *[c.send(msg) for c in clients],
-                    return_exceptions=True,
-                )
+                broadcast_live(connected_clients, msg)
 
             if now - last_stat >= 30:
                 print(f"📊 UDP:{port} → {pkt_count} пакетов за 30с")
@@ -1765,7 +1781,36 @@ async def udp_listener():
     await asyncio.gather(*tasks)
 
 
+async def ranging_ws_handler(websocket):
+    """Serve individual snapshots without subscribing the client to live CSI."""
+    try:
+        async for message in websocket:
+            try:
+                command = json.loads(message)
+            except (ValueError, UnicodeError):
+                continue
+            if not isinstance(command, dict):
+                continue
+            action = command.get("cmd")
+            if action == "ranging_status":
+                await handle_cmd(command, websocket)
+            elif isinstance(action, str) and action.startswith("ranging_web_"):
+                try:
+                    response = ranging_web.handle(command, time.monotonic())
+                except (ValueError, TypeError, KeyError, OSError) as error:
+                    response = {"type": "ranging_web_error", "message": str(error)}
+                await websocket.send(_udp_payload_to_json({**response, "request_id": command.get("request_id")}))
+    except websockets.exceptions.ConnectionClosed:
+        pass
+
+
 async def ws_handler(websocket):
+    request = getattr(websocket, "request", None)
+    path = request.path if request is not None else getattr(websocket, "path", "")
+    if path == "/ranging":
+        await ranging_ws_handler(websocket)
+        return
+
     connected_clients.add(websocket)
     try:
         peer = getattr(websocket, "remote_address", None)
@@ -1807,11 +1852,16 @@ async def ws_handler(websocket):
         localization_clients.discard(websocket)
 
 
-async def _broadcast_json(obj: dict) -> None:
-    if not connected_clients:
-        return
-    msg = _udp_payload_to_json(obj)
-    await asyncio.gather(*[c.send(msg) for c in list(connected_clients)], return_exceptions=True)
+def broadcast_live(clients, message):
+    # Live snapshots expire quickly. Skip a backed-up browser until it catches up.
+    ready = [client for client in clients if client.transport.get_write_buffer_size() < LIVE_WRITE_LIMIT]
+    websockets.broadcast(ready, message)
+
+
+async def broadcast_presence_ack(requester, response):
+    message = _udp_payload_to_json(response)
+    broadcast_live(connected_clients - {requester}, message)
+    await requester.send(message)
 
 
 async def presence_loop():
@@ -1827,7 +1877,8 @@ async def presence_loop():
                 print(f"🧭 {st['calibration_result']}")
             if "rebaseline" in st:
                 print(f"🧭 {st['rebaseline']}")
-            await _broadcast_json(st)
+            if connected_clients:
+                broadcast_live(connected_clients, _udp_payload_to_json(st))
         await asyncio.sleep(0.2)
 
 
@@ -1836,18 +1887,23 @@ async def localization_loop():
         try:
             status = localization.tick(time.monotonic())
             if status and localization_clients:
-                message = _udp_payload_to_json(status)
-                await asyncio.gather(*[client.send(message) for client in list(localization_clients)],
-                                     return_exceptions=True)
+                message = _udp_payload_to_json(add_ranging_summary(status))
+                broadcast_live(localization_clients, message)
         except Exception:
             traceback.print_exc()
         await asyncio.sleep(0.2)
 
 
+async def ranging_loop():
+    while True:
+        ranging_web.tick(time.monotonic())
+        await asyncio.sleep(0.15)
+
+
 async def main():
     # большие JSON-пакеты с сотнями пар CSI+поза
     async with websockets.serve(ws_handler, "0.0.0.0", WS_PORT, max_size=16 * 1024 * 1024):
-        await asyncio.gather(udp_listener(), presence_loop(), localization_loop())
+        await asyncio.gather(udp_listener(), presence_loop(), localization_loop(), ranging_loop())
 
 
 if __name__ == "__main__":

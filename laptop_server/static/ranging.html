@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RuView — калибровка расстояний</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#09111d;color:#e6eef8}
+*{box-sizing:border-box}body{margin:auto;max-width:1320px;padding:24px}header{margin-bottom:20px}
+h1{font-size:26px;margin:8px 0}h2{font-size:18px;margin:0 0 12px}p{line-height:1.5}
+a{color:#72cbff}.muted{color:#a3b5ca;font-size:14px}
+main{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:16px;align-items:start}
+.card{border:1px solid #2a3b51;border-radius:14px;background:#101d2d;padding:18px;margin-bottom:16px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}.row label{display:grid;gap:4px;color:#b5c6da;font-size:13px}
+input,select,button{font:inherit;border-radius:7px;border:1px solid #3c516b;padding:8px;background:#14263c;color:#eef4fc}
+input{width:90px}button{cursor:pointer}button:hover{border-color:#71cfff}button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:#16668b;border-color:#3094bd}svg{display:block;width:100%;height:420px;background:#091521;border-radius:9px;cursor:crosshair}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:7px 4px;border-bottom:1px solid #2a3b51;font-size:14px}
+td button{font-size:13px}td .row{gap:4px}.table-wrap{overflow:auto;max-height:360px}
+#error{color:#ffaaa3}#recordState{color:#ffc16c}#result{color:#6fe5d1}
+.training{color:#6fe5d1}.checking{color:#ffc16c}
+@media(max-width:850px){body{padding:12px}main{grid-template-columns:1fr}svg{height:320px}}
+</style>
+<header>
+<a href="localization.html">← План и локализация</a>
+<h1>Калибровка расстояний по Wi‑Fi</h1>
+<p class="muted" id="connection" role="status">Подключение к локальному серверу…</p>
+</header>
+<main>
+<section>
+<div class="card">
+<h2>Точки на плане</h2>
+<p class="muted" id="dataset"></p>
+<svg id="map" aria-label="План комнаты с метками устройств и точками"></svg>
+<p class="muted">Щёлкните по месту на плане или введите координаты в метрах. <span class="training">О — обучение</span>, <span class="checking">П — проверка</span>.</p>
+<form class="row" id="pointForm">
+<label>Назначение<select id="role"><option value="train">Обучение</option><option value="test">Независимая проверка</option></select></label>
+<label>X, м<input id="x" type="number" step="any" required></label>
+<label>Z, м<input id="z" type="number" step="any" required></label>
+<button id="add" class="primary" disabled>Добавить точку</button>
+</form>
+</div>
+<div class="card">
+<h2>Сохранённые точки</h2>
+<div class="table-wrap"><table><thead><tr><th>Точка</th><th>X / Z, м</th><th>Запись</th><th>Действия</th></tr></thead><tbody id="points"></tbody></table></div>
+</div>
+</section>
+<aside>
+<div class="card">
+<h2>Калибровка и запись</h2>
+<p class="muted">Запишите фон пустой комнаты и минимум три обучающие точки. Выйдите из комнаты или займите точку во время отсчёта.</p>
+<div class="row">
+<label>Отсчёт, с<input id="delay" type="number" min="0" max="120" value="15" required></label>
+<label>Запись, с<input id="seconds" type="number" min="5" max="60" value="15" required></label>
+</div>
+<p class="muted" id="radio"></p>
+<div class="row">
+<button id="background" disabled>Записать пустую комнату</button>
+<button id="empty_check" disabled>Записать пустую комнату для проверки</button>
+<button id="cancel" disabled>Отменить запись</button>
+</div>
+<p id="recordState" role="status"></p><p id="message" class="muted" role="status"></p><p id="error" role="alert"></p>
+</div>
+<div class="card">
+<h2>Обучение и проверка</h2>
+<p class="muted">Обучение и проверка запускаются по сохранённым записям. Для независимой проверки запишите хотя бы одну отдельную точку и пустую комнату.</p>
+<p class="muted" id="trainingStatus"></p>
+<div class="row">
+<button id="train" class="primary" disabled>Обучить по записям</button>
+<label>Допуск, мм<input id="tolerance" type="number" min="1" value="130" required></label>
+<button id="validate" disabled>Проверить по записям</button>
+</div>
+<p id="trainingAction" role="status"></p>
+<p id="report" class="muted"></p>
+<div id="recordingCheck" hidden>
+<p class="muted">«В отложенных блоках» — проверка внутри записанных сеансов. Для измерения погрешности используйте отдельные контрольные точки.</p>
+<div class="table-wrap"><table><thead><tr><th>Точка X / Z, м</th><th>На обучении</th><th>В отложенных блоках</th><th>До Роутера / ESP 1 / ESP 2, мм</th></tr></thead><tbody id="recordingRows"></tbody></table></div>
+<p id="emptyResult" class="muted"></p>
+</div>
+</div>
+<div class="card">
+<h2>Расстояния в реальном времени</h2>
+<p class="muted">Расстояния от распознанной точки на плане до устройств.</p>
+<p id="result">Ожидание данных</p>
+</div>
+</aside>
+</main>
+<script src="room_editor.js"></script>
+<script src="ranging.js?v=3"></script>
+</html>

@@ -231,6 +231,8 @@ build_scripts\build_windows_exe.bat
 
 Результат: `desktop_app\dist\RuViewDesktop.exe`.
 
+Условия распространения готового файла приведены в [уведомлениях о сторонних компонентах](THIRD_PARTY_NOTICES.txt).
+
 ### AppImage
 
 См. `build_scripts/appimage_notes.md` — для PyQt6 проще использовать venv на дистрибутиве; полноценный AppImage собирается через linuxdeploy + Qt‑плагины.
@@ -240,9 +242,22 @@ build_scripts\build_windows_exe.bat
 - Точка **`RuView_Setup` открытая** — только для первичной настройки; не оставляйте устройство в этом режиме в общественных местах.
 - CSI **не является** точным датчиком присутствия «как камера»; это исследовательский/демонстрационный сигнал, зависящий от роутера, помех и трафика.
 
-## Лицензия и источники
+## Источники и лицензии
 
-Экспериментальный исследовательский проект. Визуальный стиль вдохновлён публичной демо‑страницей [RuView](https://ruvnet.github.io/RuView/); реализация самостоятельная.
+### Литература и проекты
+
+1. Geng J., Huang D., De la Torre F. *DensePose From WiFi*. 2022. arXiv:2301.00250. Подготовка амплитуды и фазы CSI в [`densepose_input.py`](laptop_server/densepose_input.py) опирается на § 3.1. Идея отложенной проверки из § 4 адаптирована в [калибровке дальности](laptop_server/ranging_web.py) к трём временным блокам внутри каждой записи. Для оценки точности по комнате используются отдельные контрольные точки. [Статья](https://arxiv.org/abs/2301.00250).
+2. Wang F., Zhou S., Panev S., Han J., Huang D. *Person-in-WiFi: Fine-Grained Person Perception Using WiFi*. ICCV 2019, с. 5452–5461. Идея сопоставлять измерения CSI и кадры с разметкой по времени реализована в [калибровке с камерой](laptop_server/static/csi_pose_sync.js). Она подбирает ближайший CSI-кадр с разницей до 80 мс. [Статья](https://openaccess.thecvf.com/content_ICCV_2019/html/Wang_Person-in-WiFi_Fine-Grained_Person_Perception_Using_WiFi_ICCV_2019_paper.html), [инструменты авторов](https://github.com/geekfeiw/wifiperson).
+3. Güler R. A., Neverova N., Kokkinos I. *DensePose: Dense Human Pose Estimation in the Wild*. CVPR 2018, с. 7297–7306. Справочный источник для плотного сопоставления поверхности тела с изображением. Текущая калибровка с камерой выдаёт 16 суставов. [Статья](https://arxiv.org/abs/1802.00434), [реализация DensePose в Detectron2](https://github.com/facebookresearch/detectron2/tree/main/projects/DensePose).
+4. rUv. *RuView*. Визуальный ориентир для интерфейса телеметрии. Источник унаследованных файлов моделей перечислен с ревизиями в уведомлениях. [Репозиторий](https://github.com/ruvnet/RuView), [демо](https://ruvnet.github.io/RuView/), [модели](https://huggingface.co/ruv/ruview).
+
+Для подготовки CSI, синхронизации с камерой и оценки по временным блокам написан локальный код по описанным методам. Обучение использует записи с вашей аппаратуры.
+
+### Использование и распространение
+
+[Уведомления о сторонних компонентах](THIRD_PARTY_NOTICES.txt) перечисляют проверенные файлы RuView, условия для зависимостей и материалы с неустановленным происхождением. Оригинальный текст MIT для подтверждённых файлов находится [рядом с моделями](laptop_server/models/LICENSE.ruview.txt). Общую лицензию на исходный код этого репозитория пока предстоит оформить с правообладателями.
+
+В РФ авторское право не распространяется на идеи и методы согласно п. 5 ст. 1259 ГК РФ. Использование конкретного кода, текста и иллюстраций зависит от правового основания и условий правообладателя. Для цитирования действует ст. 1274, а для открытых лицензий предусмотрена ст. 1286.1. [Ст. 1259 ГК РФ](https://www.consultant.ru/document/cons_doc_LAW_64629/be05678dc42ddc67aae5be9ba9beebd367fb9a3f/), [ст. 1229](https://www.consultant.ru/document/cons_doc_LAW_64629/98ad2641f95945c4b7956150260564c8b44028d9/), [ст. 1274](https://www.consultant.ru/document/cons_doc_LAW_64629/84bbd636598a59112a4fe972432343dd4f51da1d/), [ст. 1286.1](https://www.consultant.ru/document/cons_doc_LAW_64629/e0c0d28fc67b7998751c3a7f98f6be9dfb789911/).
 
 ---
 

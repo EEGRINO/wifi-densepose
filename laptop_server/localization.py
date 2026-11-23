@@ -581,13 +581,14 @@ class Localization:
     def active_lines(self, now):
         return sorted(k for k, b in self.buffers.items() if b and now - b[-1][0] < 0.6)
 
-    def feature(self, now):
-        if not self.lines:
+    def feature(self, now, lines=None):
+        lines = self.lines if lines is None else lines
+        if not lines:
             return None
-        if self.signal_quality.assess(self.lines, now)["blocked"]:
+        if self.signal_quality.assess(lines, now)["blocked"]:
             return None
         parts = []
-        for key in self.lines:
+        for key in lines:
             samples = [v for t, v in self.buffers.get(key, []) if now - WINDOW <= t <= now]
             buf = self.buffers.get(key)
             if (len(samples) < MIN_FRAMES or not buf or now - buf[-1][0] > 0.5):
@@ -596,6 +597,16 @@ class Localization:
             # 52 normalized amplitudes + RSSI + log power + 52 temporal deviations.
             parts.extend((np.mean(a, axis=0), np.std(a[:, :52], axis=0)))
         return np.concatenate(parts)
+
+    def ranging_snapshot(self, now):
+        lines = self.active_lines(now)
+        values = self.feature(now, lines)
+        return {
+            "type": "ranging", "dataset_id": self.dataset["id"], "room": self.room,
+            "devices": self.devices, "lines": lines,
+            "quality": self.signal_quality.assess(lines, now),
+            "features": None if values is None else values.tolist(),
+        }
 
     def start(self, x, z, role, delay, seconds, now):
         if self.room is None:
@@ -713,6 +724,10 @@ class Localization:
                                                 and r["presence_or_sector_accuracy"] < .5]
         save_json(self.directory / "report.json", self.report)
 
+    @staticmethod
+    def training_ready(counts):
+        return counts.get("empty", 0) >= 2 and len(counts) >= 3 and min(counts.values()) >= 2
+
     def train(self, algorithm="ridge"):
         fitters = {"ridge": fit_ridge, "svm": fit_svm, "ridge_rssi": fit_rssi_ridge,
                    "ridge_csi_change": fit_csi_change}
@@ -724,7 +739,7 @@ class Localization:
         train = group_training_sessions([s for s in self.sessions if s["role"] == "train"],
                                         self.room)
         counts = collections.Counter(s["label"] for s in train)
-        if "empty" not in counts or len(counts) < 3 or min(counts.values(), default=0) < 2:
+        if not self.training_ready(counts):
             missing = ", ".join(f"{label}: {count}/2" for label, count in counts.items()
                                 if count < 2)
             raise ValueError("Нужны минимум 2 отдельные записи «Пусто» и по 2 записи хотя бы в 2 точках"
@@ -835,6 +850,8 @@ class Localization:
         return self.status(now)
 
     def status(self, now):
+        training = group_training_sessions([s for s in self.sessions if s["role"] == "train"], self.room)
+        counts = collections.Counter(s["label"] for s in training)
         rec = self.recording
         progress = None
         if rec:
@@ -857,7 +874,7 @@ class Localization:
                 "quality": self.signal_quality.assess(self.lines, now),
                 "active_lines": self.active_lines(now), "recording": progress,
                 "sessions": [{k: v for k, v in s.items() if k != "X"} for s in self.sessions],
-                "model_ready": self.model is not None, "report": self.report,
+                "model_ready": self.model is not None, "report": self.report, "can_train": self.training_ready(counts),
                 "ab_available": (self.directory / AB_PLAN_FILE).is_file(),
                 "ab_preview": self.ab_preview.status(now) if self.ab_preview is not None else None,
                 "ab_changes": list(self.ab_preview.changes) if self.ab_preview is not None else [],

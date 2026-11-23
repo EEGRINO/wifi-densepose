@@ -23,7 +23,8 @@ class Socket{
  constructor(){this.readyState=1;this.messages=[];sockets.push(this);}
  send(s){this.messages.push(JSON.parse(s));}
 }
-const context=vm.createContext({document,WebSocket:Socket,location:{hostname:'127.0.0.1'},
+let destination;
+const context=vm.createContext({document,WebSocket:Socket,location:{hostname:'127.0.0.1',assign:value=>destination=value},
  setTimeout:()=>{},console});
 const editorSource=fs.readFileSync(require('node:path').join(__dirname,'..','static','room_editor.js'),'utf8');
 vm.runInContext(editorSource,context);
@@ -265,6 +266,30 @@ assert.equal(vm.runInContext('selected[1]',context),2.75);
 assert.equal(elements.get('cols').disabled,true);
 assert.equal(elements.get('rows').disabled,true);
 
+state.can_train=false;
+state.ranging_points=3;
+vm.runInContext('render(input)',context);
+assert.equal(elements.get('train').disabled,false);
+const beforeTraining=sockets[0].messages.length;
+elements.get('train').onclick();
+assert.equal(destination,'ranging.html?train=new');
+assert.equal(sockets[0].messages.length,beforeTraining);
+state.can_train=true;
+vm.runInContext('render(input)',context);
+elements.get('train').onclick();
+assert.equal(sockets[0].messages.at(-1).cmd,'localization_train');
+sockets[0].onmessage({data:JSON.stringify({...state,action:'localization_train'})});
+assert.match(elements.get('sectorTrainStatus').textContent,/обучена/);
+
+const commandsByButton={newDataset:'localization_dataset_new',openDataset:'localization_dataset_open',
+ visitA:'localization_visit_a',visitB:'localization_visit_b',cancel:'localization_cancel',
+ abStart:'localization_ab_start',abStop:'localization_ab_stop'};
+for(const [control,cmd] of Object.entries(commandsByButton)){
+ elements.get(control).onclick();
+ assert.equal(sockets[0].messages.at(-1).cmd,cmd);
+}
+const buttons=[...html.matchAll(/<button\b[^>]*\bid="([^"]+)"/g)].map(match=>match[1]);
+for(const id of buttons)assert.equal(typeof elements.get(id)?.onclick,'function',id);
 sockets[0].onclose();
 assert.match(elements.get('estimate').textContent,/Нет связи/);
 assert.match(elements.get('qualitySummary').textContent,/неактуальны/);

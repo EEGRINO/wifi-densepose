@@ -1,0 +1,96 @@
+Уведомления о сторонних компонентах wifi-densepose
+Сверено 23 ноября 2026 года.
+
+Модели RuView, которые лежат в репозитории
+
+Правообладатель в оригинальном уведомлении RuView — Copyright (c) 2024 rUv.
+Издатель коллекции моделей ruv/ruview указал лицензию MIT. Копия текста
+лицензии находится в laptop_server/models/LICENSE.ruview.txt.
+Оригинал https://github.com/ruvnet/RuView/blob/main/LICENSE
+
+В каталоге laptop_server/models следующие файлы совпадают по SHA-256
+с опубликованными файлами ruv/ruview:
+
+  model-q2.bin, model-q4.bin, model-q8.bin, model.safetensors,
+  node-1.json, node-2.json, presence-head.json.
+
+В следующих файлах сверено содержимое с учётом формата конца строки:
+
+  config.json, model.rvf.jsonl, training-metrics.json.
+
+Ревизия для этих десяти файлов
+https://huggingface.co/ruv/ruview/tree/544fb5d07c15733a12dbf16c562e73cb7f75eb71
+
+Карточка laptop_server/models/README.md совпадает с карточкой из более
+ранней ревизии с учётом формата конца строки. Её результаты относятся
+к той версии RuView и её условиям эксперимента.
+https://huggingface.co/ruv/ruview/tree/15f152efd320f559bc87e20a5367a1af1fad00ac
+
+Локальный model_fixed.safetensors побайтово совпадает с первыми 48 000 байтами
+опубликованного model.safetensors. В копии отсутствуют последние 840 байт.
+Это неполная копия RuView, к ней относится то же уведомление MIT.
+При передаче файлов RuView приложите уведомление об авторских правах и полный
+текст MIT.
+
+Формат activity_model.npz и limb_calib.npz совпадает с форматом калибровок,
+которые создаёт локальный сервер. Источник конкретных записей и условия
+распространения для этих двух файлов пока не подтверждены. Перед новым
+выпуском подтвердите права на них или исключите их из комплекта. Если
+раздаётся Git-репозиторий с историей, проверьте также доступные ревизии.
+
+Библиотеки, которые загружаются браузером
+
+  Three.js 0.158.0 — MIT. Используется на 3D-карте и в веб-интерфейсе ESP32.
+  https://github.com/mrdoob/three.js/blob/r158/LICENSE
+
+  MediaPipe — Apache-2.0. Калибровка с камерой загружает с CDN
+  @mediapipe/camera_utils 0.3.1675466862, @mediapipe/drawing_utils
+  0.3.1675466124 и @mediapipe/pose 0.5.1675469404 с его ресурсами.
+  https://github.com/google-ai-edge/mediapipe/blob/master/LICENSE
+
+Если будете поставлять локальные копии этих пакетов для работы без интернета,
+сохраните лицензионные файлы конкретных пакетов и применимые уведомления.
+
+Зависимости сборки прошивки ESP32
+
+Версии ниже зафиксированы по локальной сборке. При повторной сборке
+сверяйте фактически установленные версии и вложенные компоненты.
+
+  Arduino-ESP32 2.0.17 — LGPL-2.1, у вложенных SDK-компонентов свои условия.
+  https://github.com/espressif/arduino-esp32/blob/2.0.17/LICENSE.md
+  ESPAsyncWebServer 3.6.0 и AsyncTCP 3.3.2 — LGPL-3.0.
+  https://github.com/mathieucarbou/ESPAsyncWebServer
+  https://github.com/mathieucarbou/AsyncTCP
+  ArduinoJson 7.4.3 — MIT.
+  https://github.com/bblanchon/ArduinoJson/blob/v7.4.3/LICENSE.txt
+
+Для раздачи готовой прошивки проверьте состав двоичных файлов и выполните
+обязательства конкретных лицензий, включая предоставление уведомлений,
+соответствующих исходников и возможность пересборки или перелинковки,
+где это требуется применимой LGPL.
+
+Зависимости сервера и настольного приложения
+
+  NumPy — BSD-3-Clause для основной части. Wheel может включать компоненты
+  под другими лицензиями. Для выпуска используйте уведомления из его METADATA
+  и каталога лицензий.
+  https://github.com/numpy/numpy/blob/main/LICENSE.txt
+  scikit-learn и websockets — BSD-3-Clause.
+  https://github.com/scikit-learn/scikit-learn/blob/main/COPYING
+  https://github.com/python-websockets/websockets/blob/main/LICENSE
+  PyQt6 — GPL-3.0-only в установленном пакете, у Riverbank есть также
+  коммерческая лицензия. В открытом wheel PyQt6-Qt6 используется LGPL v3.
+  https://www.riverbankcomputing.com/software/pyqt/intro
+  https://www.qt.io/development/open-source-lgpl-obligations
+  PyQt6-sip — BSD-2-Clause, zeroconf — LGPL-2.1-or-later,
+  websocket-client — Apache-2.0.
+
+Для распространяемого .exe или AppImage проверьте условия PyQt6 и Qt
+для всего комплекта и вложите лицензии фактически упакованных зависимостей.
+Исключение PyInstaller относится к самому PyInstaller. Для GPL-сборки
+выполните требования к лицензии приложения и доступу к соответствующим
+исходникам. Для закрытой сборки проверьте коммерческие права на PyQt6
+и применимые условия Qt.
+https://pyinstaller.org/en/stable/license.html
+
+Сведения о статьях и о применённых в проекте методах приведены в README.md.

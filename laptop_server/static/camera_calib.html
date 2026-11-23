@@ -68,9 +68,9 @@
     ul.hint { margin: 8px 0 0; padding-left: 1.2em; font-size: 0.88rem; color: var(--muted); line-height: 1.45; }
     a { color: var(--line); }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js" crossorigin="anonymous"></script>
 </head>
 <body>
   <h1>Калибровка CSI → поза (камера + зарядка)</h1>
@@ -144,6 +144,7 @@
     </div>
   </div>
 
+  <script src="csi_pose_sync.js"></script>
   <script>
 (function () {
   /** Браузер на 0.0.0.0 не открывает ws к тому же хосту надёжно; камера тоже часто требует localhost/127.0.0.1. */
@@ -170,6 +171,9 @@
   let camera = null;
   let lastHeights = null;
   let lastCsiTs = 0;
+  let videoFrameAt = null;
+  let lastPairGap = null;
+  const poseSync = createCsiPoseSync();
   let ws = null;
   let recording = false;
   const localBuffer = [];
@@ -355,8 +359,9 @@
       el.style.color = 'var(--warn)';
       return;
     }
-    el.textContent = 'Пары: OK — накапливаем CSI+скелет.';
-    el.style.color = 'var(--accent)';
+    el.textContent = lastPairGap === null ? 'Пары: ожидается CSI в пределах 80 мс от кадра камеры.'
+      : 'Пары: запись идёт · расхождение ' + Math.round(lastPairGap) + ' мс.';
+    el.style.color = lastPairGap === null ? 'var(--warn)' : 'var(--accent)';
   }
 
   function onPoseResults(results) {
@@ -365,6 +370,7 @@
     ctx.clearRect(0, 0, w, h);
     if (!results.poseLandmarks) {
       lastPoseOk = false;
+      lastPairGap = null;
       poseStatus.textContent = 'Поза: не найдена (встаньте в кадр)';
       updatePairGate();
       return;
@@ -374,10 +380,11 @@
 
     const sk = landmarksToSk32(lm);
     lastPoseOk = !!sk;
-    const csiOk = lastHeights && lastHeights.length >= 64 && (Date.now() - lastCsiTs < CSI_FRESH_MS);
-    if (sk && recording && csiOk) {
+    const paired = sk && recording ? poseSync.pair(videoFrameAt) : null;
+    lastPairGap = paired?.gapMs ?? null;
+    if (paired) {
       localBuffer.push({
-        heights: finite64(lastHeights),
+        heights: finite64(paired.heights),
         skeleton: finite32(sk)
       });
       document.getElementById('n-pairs').textContent = String(localBuffer.length);
@@ -399,23 +406,19 @@
 
   document.getElementById('btn-cam').onclick = async () => {
     showErr('');
-    if (!window.Pose) {
-      showErr('MediaPipe Pose не загрузился (проверьте сеть / CDN).');
+    if (!window.Pose || !window.Camera) {
+      showErr('Библиотеки MediaPipe не загрузились. Для запуска камеры нужен доступ к CDN.');
       return;
     }
+    const start = document.getElementById('btn-cam');
+    start.disabled = true;
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        showErr('Камера недоступна: нет getUserMedia (небезопасный контекст?). Откройте страницу по http://127.0.0.1:8000/…');
-        return;
+        throw new Error('Откройте страницу по http://127.0.0.1:8000, чтобы браузер разрешил камеру.');
       }
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 } }, audio: false });
-      vid.srcObject = stream;
-      await vid.play();
-      resizeCanvas();
-      vid.addEventListener('loadedmetadata', resizeCanvas);
 
       pose = new Pose({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${file}`
       });
       pose.setOptions({
         modelComplexity: 1,
@@ -426,15 +429,19 @@
       pose.onResults(onPoseResults);
 
       camera = new Camera(vid, {
-        onFrame: async () => { await pose.send({ image: vid }); },
+        onFrame: async () => {
+          videoFrameAt = Date.now();
+          await pose.send({ image: vid });
+        },
         width: 640,
         height: 480
       });
-      camera.start();
-      document.getElementById('btn-cam').disabled = true;
+      await camera.start();
+      resizeCanvas();
       document.getElementById('btn-cam-off').disabled = false;
       document.getElementById('btn-rec').disabled = false;
     } catch (e) {
+      stopCamera();
       const msg = e && e.message ? e.message : String(e);
       let hint = '';
       const h = (location.hostname || '').toLowerCase();
@@ -447,7 +454,7 @@
     }
   };
 
-  document.getElementById('btn-cam-off').onclick = () => {
+  function stopCamera() {
     if (camera) { camera.stop(); camera = null; }
     if (pose) { pose.close(); pose = null; }
     if (vid.srcObject) {
@@ -460,9 +467,14 @@
     document.getElementById('btn-rec').disabled = true;
     document.getElementById('btn-rec-stop').disabled = true;
     recording = false;
-  };
+    videoFrameAt = null;
+    lastPairGap = null;
+  }
+  document.getElementById('btn-cam-off').onclick = stopCamera;
 
   document.getElementById('btn-rec').onclick = () => {
+    poseSync.reset();
+    lastPairGap = null;
     recording = true;
     document.getElementById('btn-rec').disabled = true;
     document.getElementById('btn-rec-stop').disabled = false;
@@ -495,15 +507,24 @@
       csiStatus.textContent = 'CSI: WebSocket подключён (' + wsUrl() + ')';
       try { ws.send(JSON.stringify({ cmd: 'get_status' })); } catch (_) {}
     };
-    ws.onclose = () => { csiStatus.textContent = 'CSI: отключено — переподключение…'; setTimeout(connectWs, 2000); };
+    ws.onclose = () => {
+      poseSync.reset();
+      lastHeights = null;
+      lastPairGap = null;
+      csiStatus.textContent = 'CSI: отключено — переподключение…';
+      document.getElementById('btn-train').textContent = 'Обучить матрицу позы (МНК)';
+      document.getElementById('btn-train-limb').textContent = 'Обучить модель зон';
+      setTimeout(connectWs, 2000);
+    };
     ws.onerror = () => { csiStatus.textContent = 'CSI: ошибка WS'; };
     ws.onmessage = (ev) => {
       try {
         const o = JSON.parse(ev.data);
         const heights = heightsFromPacket(o);
-        if (heights && heights.length >= 64) {
+        const receivedAt = Date.now();
+        if (heights && heights.length >= 64 && poseSync.add(o, heights, receivedAt)) {
           lastHeights = heights;
-          lastCsiTs = Date.now();
+          lastCsiTs = receivedAt;
         }
         if (o.type === 'camera_pose_ack') {
           if (o.n_pairs != null) serverPairs = o.n_pairs;
@@ -647,16 +668,19 @@
     document.getElementById('n-pairs').textContent = '0';
     showMsg('Локальный буфер очищен.');
   };
-  document.getElementById('btn-clear-srv').onclick = () => {
-    if (ws && ws.readyState === WebSocket.OPEN)
-      ws.send(JSON.stringify({ cmd: 'camera_pose_clear' }));
-  };
-  document.getElementById('btn-revert').onclick = () => {
-    if (ws && ws.readyState === WebSocket.OPEN)
-      ws.send(JSON.stringify({ cmd: 'camera_pose_revert' }));
-  };
+  function sendPoseCommand(cmd) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showErr('Нет связи с сервером. Повторите действие после подключения.');
+      return;
+    }
+    showErr('');
+    ws.send(JSON.stringify({ cmd }));
+  }
+  document.getElementById('btn-clear-srv').onclick = () => sendPoseCommand('camera_pose_clear');
+  document.getElementById('btn-revert').onclick = () => sendPoseCommand('camera_pose_revert');
 
   window.addEventListener('resize', resizeCanvas);
+  vid.addEventListener('loadedmetadata', resizeCanvas);
   requestAnimationFrame(resizeCanvas);
   updateTrainUi();
   updatePairGate();

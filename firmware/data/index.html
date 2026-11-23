@@ -320,6 +320,7 @@
         <button type="button" id="btn_udp_save">Сохранить IP</button>
       </div>
       <button class="primary" id="btn_cal">Calibrate</button>
+      <span id="cal_msg" role="status"></span>
     </header>
     <main class="ru-main">
       <div class="card obs-card">
@@ -632,8 +633,20 @@
     };
   }
 
-  document.getElementById('btn_cal').onclick = () => {
-    fetch('/api/calibrate', { method: 'POST' }).catch(() => {});
+  const calibrateButton = document.getElementById('btn_cal');
+  calibrateButton.onclick = async () => {
+    const message = document.getElementById('cal_msg');
+    calibrateButton.disabled = true;
+    message.textContent = 'Запуск калибровки…';
+    try {
+      const response = await fetch('/api/calibrate', { method: 'POST' });
+      if (!response.ok || !(await response.json()).ok) throw new Error('ESP отклонила запрос');
+      message.textContent = 'ESP приняла команду калибровки.';
+    } catch (error) {
+      message.textContent = 'Калибровка недоступна. Проверьте связь с ESP.';
+    } finally {
+      calibrateButton.disabled = false;
+    }
   };
 
   async function pollDeviceHealth() {

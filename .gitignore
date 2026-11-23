@@ -36,6 +36,7 @@ package-lock.json
 # Записи CSI (большие файлы)
 laptop_server/recordings/
 laptop_server/models/presence_calib.json
+laptop_server/models/camera_pose_W.npz
 
 # Размеченные CSI-записи локализации
 laptop_server/localization_data/
