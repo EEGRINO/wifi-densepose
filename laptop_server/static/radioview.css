@@ -45,5 +45,8 @@ select{width:100%;padding:5px 8px;background:#0b1723;border:1px solid var(--line
 .readout canvas{display:block;width:100%;height:62px;margin-top:8px;background:#0a1722;border-radius:6px}
 .readout #pose{height:139px}
 .graph-label{font-size:.75rem}
+.grain-setting{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:0 8px;margin:8px 0;color:var(--muted)}
+.grain-setting output{font-size:.82rem;font-variant-numeric:tabular-nums}
+.grain-setting input{grid-column:1/-1;width:100%;margin:2px 0;accent-color:var(--a)}
 @media(max-width:850px){.workspace{grid-template-columns:1fr}.workspace aside{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.readout{margin:0}#room{height:clamp(305px,55vh,600px)}}
 @media(max-width:440px){.toolbar,.stage-foot{padding:8px;flex-wrap:wrap}}

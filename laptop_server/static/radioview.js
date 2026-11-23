@@ -5,6 +5,7 @@
  const keys=['esp1','esp2'];
  const canvas=byId('room');
  const viewport=byId('viewport');
+ const gainControl=byId('grain-gain');
  const scene=RadioScene.scene(canvas), trail=RadioScene.trail();
  let rawSamples=new Map();
  const estimateLabels={empty:'Пустая комната',untrained:'Нужна калибровка',model_needed:'Нужна калибровка',
@@ -18,6 +19,8 @@
   const el=byId(id);
   if (el.textContent!==value) el.textContent=value;
  }
+
+ gainControl.oninput=()=>text('grain-gain-value',`×${Number(gainControl.value).toLocaleString('ru-RU')}`);
 
  function bindReceivers() {
   const available=new Set(Object.values(receivers).filter(Boolean));
@@ -174,13 +177,16 @@
    const ip=packet.receiver;
    const age=packet.age_ms;
    if (typeof ip!=='string'||!ip||!Number.isFinite(age)||age<0||age>1000) continue;
-   const current=next.get(ip);
-   // Prefer the frame type used for camera calibration, then the newest packet of that type.
-   if (current&&((!current.peer&&packet.peer)||(packet.peer===current.peer&&age>=current.age_ms))) continue;
    const key=JSON.stringify([ip,packet.source,packet.channel,packet.sequence,packet.timestamp_us,packet.iq]);
    const previous=rawSamples.get(ip);
    const samples=previous?.key===key?previous.samples:VisorGrain.decode(packet.iq);
-   if (samples) next.set(ip,{...packet,key,samples,receivedAt:now-age});
+   if (!samples) continue;
+   const hasSignal=previous?.key===key?previous.hasSignal:samples.some(value=>value!==0);
+   const current=next.get(ip);
+   // Prefer usable I/Q, then the frame type used for camera calibration.
+   const keepCurrent=current&&(hasSignal!==current.hasSignal?current.hasSignal:
+    (!current.peer&&packet.peer)||(packet.peer===current.peer&&age>=current.age_ms));
+   if (!keepCurrent) next.set(ip,{...packet,key,samples,hasSignal,receivedAt:now-age});
   }
   rawSamples=next;
   bindReceivers();
@@ -253,14 +259,15 @@
   text('radio-title',`Сигнал ${RadioScene.names[view]}`);
   const ip=receivers[view];
   const strength=radio&&Number.isFinite(radio.rssi)?` · ${radio.rssi} дБм`:'';
-  text('radio-status',radio?`${ip}${strength} · канал ${radio.channel}`:ip?`${ip} · нет свежих кадров I/Q`:'Укажите IP принимающей платы');
+  const frameStatus=radio?.hasSignal?` · получено ${radio.samples.length/2} отсчётов I/Q`:' · нулевой кадр I/Q';
+  text('radio-status',radio?`${ip}${strength} · канал ${radio.channel}${frameStatus}`:ip?`${ip} · нет свежих кадров I/Q`:'Укажите IP принимающей платы');
   const values=radio?VisorGrain.values(radio.samples).amplitude:null;
   RadioScene.drawSpectrum(byId('spectrum'),values,RadioScene.colors[view]);
   byId('pose-panel').hidden=!joints;
   if (joints) RadioScene.drawPose(byId('pose'),joints);
-  const awaitingCalibration=!!radio&&!radio.peer&&ip===primaryIp&&!radio.pose;
+  const awaitingCalibration=radio?.hasSignal&&!radio.peer&&ip===primaryIp&&!radio.pose;
   byId('pose-calibration').hidden=!awaitingCalibration;
-  text('pose-status',joints?'Силуэт по экспериментальной 2D-оценке.':!radio?'':!cell?
+  text('pose-status',joints?'Силуэт по экспериментальной 2D-оценке.':!radio?.hasSignal?'':!cell?
    'Для размещения силуэта нужна оценка положения.':awaitingCalibration?'Нужна калибровка позы.':
    'Для этого потока доступно только зерно CSI.');
  }
@@ -269,9 +276,9 @@
   const result=positionAt(now);
   const cell=layout?.cellAt(result.point)??null;
   const radio=currentRadio(now);
-  const joints=cell&&radio?posePoints(radio.pose):null;
+  const joints=cell&&radio?.hasSignal?posePoints(radio.pose):null;
   trail.update(cell,now);
-  scene.draw(now,devices,trail.visible(now),cell?result.point:null,radio,joints);
+  scene.draw(now,devices,trail.visible(now),cell?result.point:null,radio,joints,gainControl.valueAsNumber);
   if (now-lastHud>=120) {
    updateHud(result,cell,radio,joints);
    lastHud=now;

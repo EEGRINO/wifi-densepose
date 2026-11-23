@@ -53,6 +53,17 @@ test('decodes raw signed I/Q and changes visual texture when the raw signal chan
  assert.equal(VisorGrain.decode('AA=='),null);
 });
 
+test('gives weak nonzero I/Q a visible exposure and keeps zero data black', () => {
+ const weak=VisorGrain.values(new Int8Array([0,0,0,0,1,0,-1,0,0,1,1,1])).amplitude;
+ const before=Array.from(weak);
+ const exposure=VisorGrain.displayExposure(weak);
+ assert.ok(exposure>10);
+ assert.ok(weak[2]*exposure>=.5);
+ assert.equal(weak[0]*exposure,0);
+ assert.deepEqual(Array.from(weak),before);
+ assert.equal(VisorGrain.displayExposure(new Float32Array(64)),0);
+});
+
 test('requires a position and live pose to project a silhouette and hides it behind the view', () => {
  const points=Array.from({length:16},(_,i)=>[.4+i*.01,.2+i*.03]);
  const forward=([x,y])=>[200+x,320-y*100];

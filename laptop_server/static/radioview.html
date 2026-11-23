@@ -4,11 +4,11 @@
  <meta charset="utf-8">
  <meta name="viewport" content="width=device-width, initial-scale=1">
  <title>Радиовизор · WiFi DensePose</title>
- <link rel="stylesheet" href="radioview.css">
+ <link rel="stylesheet" href="radioview.css?v=2">
  <script defer src="room_editor.js"></script>
- <script defer src="visor_grain.js"></script>
- <script defer src="radioview_scene.js"></script>
- <script defer src="radioview.js"></script>
+ <script defer src="visor_grain.js?v=2"></script>
+ <script defer src="radioview_scene.js?v=2"></script>
+ <script defer src="radioview.js?v=2"></script>
 </head>
 <body>
 <main>
@@ -55,6 +55,10 @@
     <p id="radio-status" class="muted" role="status"></p>
     <canvas id="spectrum" aria-label="Амплитуда принятых отсчётов I/Q"></canvas>
     <p class="muted graph-label">Амплитуда исходных I/Q</p>
+    <div class="grain-setting">
+     <label for="grain-gain">Яркость зерна</label><output id="grain-gain-value" for="grain-gain">×1,25</output>
+     <input id="grain-gain" type="range" min="0.5" max="2.5" step="0.05" value="1.25">
+    </div>
     <div class="pose" id="pose-panel" hidden>
      <h3>Оценка позы</h3>
      <canvas id="pose" aria-label="Плоская оценка суставов по CSI"></canvas>

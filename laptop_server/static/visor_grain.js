@@ -25,6 +25,13 @@ const VisorGrain = (() => {
   return {amplitude,seed};
  }
 
+ function displayExposure(amplitude) {
+  const occupied=amplitude.filter(value=>value>0).sort();
+  if (!occupied.length) return 0;
+  const reference=occupied[Math.floor((occupied.length-1)*.85)];
+  return clamp(.56/reference,1,96);
+ }
+
  function randomness(seed) {
   let bits=seed||1;
   return ()=>{
@@ -34,16 +41,21 @@ const VisorGrain = (() => {
  }
 
  function grain() {
-  let source=null, signature=null, amplitude=null, seed=1;
+  let signature=null, previousGain=0, amplitude=null, seed=1, exposure=0;
   let texture, pixels, textureContext;
 
-  function setPacket(packet) {
+  function setPacket(packet,gain) {
    const key=packet?.key??null;
-   if (key===signature) return;
-   signature=key;
-   source=packet?.samples??null;
-   if (!source) return;
-   ({amplitude,seed}=values(source));
+   if (key===signature&&gain===previousGain) return;
+   if (key!==signature) {
+    signature=key;
+    if (packet) {
+     ({amplitude,seed}=values(packet.samples));
+     exposure=displayExposure(amplitude);
+    } else exposure=0;
+   }
+   previousGain=gain;
+   if (!exposure) return;
    if (!texture) {
     texture=document.createElement('canvas');texture.width=width;texture.height=height;
     textureContext=texture.getContext('2d');
@@ -52,10 +64,10 @@ const VisorGrain = (() => {
    const random=randomness(seed), rgba=pixels.data;
    for (let y=0;y<height;y++)for (let x=0;x<width;x++) {
     const offset=(y*width+x)*4;
-    const sample=amplitude[(Math.floor(x/5)+3*Math.floor(y/11))%amplitude.length];
+    const sample=clamp(amplitude[(Math.floor(x/5)+3*Math.floor(y/11))%amplitude.length]*exposure,0,1);
     const speck=random();
-    const value=1+Math.floor(9*speck**3*(.45+sample*1.6))+(speck>.982?7+sample*18:0);
-    rgba[offset]=value*.64;rgba[offset+1]=value*.84;rgba[offset+2]=value;rgba[offset+3]=255;
+    const value=gain*sample*(3+44*speck**4+(speck>.962?55:0));
+    rgba[offset]=value*.71;rgba[offset+1]=value*.87;rgba[offset+2]=value;rgba[offset+3]=255;
    }
    textureContext.putImageData(pixels,0,0);
   }
@@ -100,12 +112,12 @@ const VisorGrain = (() => {
    segment([head[0]-.18*(neck[0]-head[0]), head[1]-.18*(neck[1]-head[1])],neck,radius,380);
   }
 
-  return function draw(ctx,w,h,packet,pose,alpha=1) {
-   setPacket(packet);
+  return function draw(ctx,w,h,packet,pose,gain,alpha=1) {
+   setPacket(packet,gain);
    ctx.save();
    ctx.globalAlpha=alpha;
    ctx.fillStyle='#000';ctx.fillRect(0,0,w,h);
-   if (source) {
+   if (exposure) {
     ctx.imageSmoothingEnabled=false;
     ctx.drawImage(texture,0,0,w,h);
     if (pose&&alpha>.98) drawPerson(ctx,pose.points,pose.scale);
@@ -126,5 +138,5 @@ const VisorGrain = (() => {
   return {points,scale};
  }
 
- return {decode,values,grain,projectPose};
+ return {decode,values,displayExposure,grain,projectPose};
 })();

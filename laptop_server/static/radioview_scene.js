@@ -142,7 +142,7 @@ const RadioScene = (() => {
    return true;
   }
 
-  function draw(now,devices,trail,person,radio,joints) {
+  function draw(now,devices,trail,person,radio,joints,gain) {
    const surface=canvasContext(canvas);
    if (!surface||!layout) return;
    const {ctx,w,h}=surface, node=devices[view];
@@ -158,7 +158,7 @@ const RadioScene = (() => {
    darkness=from&&t<1?mix(fromDarkness,goalDarkness,ease):goalDarkness;
    if (darkness===1) {
     const pose=VisorGrain.projectPose(projection.point,person,joints,w,h);
-    drawGrain(ctx,w,h,radio,pose);
+    drawGrain(ctx,w,h,radio,pose,gain);
     return;
    }
    const polygon=(points,y=0)=>projection.path(ctx,points.map(p=>flat(p,y)),true);
@@ -202,7 +202,7 @@ const RadioScene = (() => {
     ctx.lineWidth=3;ctx.strokeStyle='#0a1721';ctx.strokeText(names[key],p[0]+9,p[1]-8);
     ctx.fillText(names[key],p[0]+9,p[1]-8);
    }
-   if (darkness>0) drawGrain(ctx,w,h,radio,null,darkness);
+   if (darkness>0) drawGrain(ctx,w,h,radio,null,gain,darkness);
   }
 
   return {
