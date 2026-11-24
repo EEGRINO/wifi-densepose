@@ -8,6 +8,7 @@ from copy import deepcopy
 
 import numpy as np
 
+import diagnostics
 from csi_ranging import TOLERANCE_MM, distances, estimate, evaluate_position, fit, layout, validation
 from localization import WINDOW, inside_room, save_json
 
@@ -30,6 +31,8 @@ class RangingWeb:
             return
         data = (json.loads(path.read_text(encoding="utf-8")) if path.exists()
                 else {"points": [], "captures": {}, "model": None, "report": None})
+        if self.recording:
+            self.log_recording_end(self.recording, "cancelled", "dataset_changed")
         self.path, self.data = path, data
         self.recording = None
         self.message = ""
@@ -114,6 +117,27 @@ class RangingWeb:
             "message": self.message,
         }
 
+    def load_for_diagnostics(self):
+        try:
+            self.load()
+            if not isinstance(self.data, dict):
+                raise ValueError("Invalid ranging data")
+            return True
+        except (OSError, ValueError) as error:
+            diagnostics.current.changed("ranging.load_error", "ranging.model_load_failed",
+                            (diagnostics.dataset_id(self.localization.dataset), type(error).__name__),
+                            level="warning", exception=type(error).__name__)
+            return False
+
+    def observe_position(self, now):
+        snapshot = self.localization.ranging_snapshot(now)
+        status = self.status(snapshot, now)
+        model = self.data.get("model") if status["model_ready"] else None
+        point = status["estimate"]["position"] if status["estimate"] else None
+        diagnostics.position("ranging", state=status["live_state"], reason=status["live_reason"],
+                             active_lines=snapshot["lines"], expected_lines=model["lines"] if model else [],
+                             ready=status["model_ready"], point=point)
+
     @staticmethod
     def signal_ready(snapshot):
         return (snapshot["features"] is not None
@@ -128,10 +152,12 @@ class RangingWeb:
                 or self.localization.devices != rec["layout"]["devices"]):
             self.recording = None
             self.message = "План или расстановка изменились. Текущая запись остановлена."
+            self.log_recording_end(rec, "cancelled", "layout_changed")
             return
         if now >= rec["end"]:
             self.recording = None
             if len(rec["windows"]) < math.ceil(rec["seconds"] * .8):
+                self.log_recording_end(rec, "failed", "too_few_windows")
                 self.message = f"Запись прервана: собрано {len(rec['windows'])}/{rec['seconds']} пригодных окон. Повторите измерение."
                 return
             capture = {key: rec[key] for key in ("layout", "lines", "windows")}
@@ -139,8 +165,11 @@ class RangingWeb:
                 self.save(**self.capture_changes(rec["target"], capture, rec["role"]))
             except OSError as error:
                 self.message = f"Запись не сохранена: {error}"
+                self.log_recording_end(rec, "failed", "save_failed")
+                diagnostics.failure("recording.save_failed", error, model="ranging")
                 return
             self.message = f"Запись сохранена: {len(rec['windows'])} окон."
+            self.log_recording_end(rec, "saved")
         elif now >= rec["next"]:
             snapshot = self.localization.ranging_snapshot(now)
             rec["next"] += WINDOW
@@ -148,6 +177,14 @@ class RangingWeb:
                 rec["next"] = now + WINDOW
             if snapshot["lines"] == rec["lines"] and snapshot["features"] is not None:
                 rec["windows"].append(snapshot["features"])
+            else:
+                rec["skipped"] = rec.get("skipped", 0) + 1
+
+    @staticmethod
+    def log_recording_end(rec, result, reason=None):
+        diagnostics.event("recording.finished", model="ranging", capture=rec["capture_id"],
+                          role=rec["role"], target=rec["kind"], result=result, reason=reason,
+                          windows=len(rec["windows"]), skipped=rec.get("skipped", 0))
 
     def handle(self, cmd, now):
         self.load()
@@ -158,6 +195,8 @@ class RangingWeb:
         if cmd.get("dataset_id") != snapshot["dataset_id"]:
             raise ValueError("Открыт другой набор. Обновите страницу.")
         if action == "ranging_web_cancel":
+            if self.recording:
+                self.log_recording_end(self.recording, "cancelled", "user_cancelled")
             self.recording = None
             self.message = "Запись отменена."
             return self.status(snapshot, now)
@@ -207,6 +246,11 @@ class RangingWeb:
                               ("train" if key == REFERENCE else "test"),
                               "layout": deepcopy(config), "lines": snapshot["lines"], "windows": [],
                               "start": start, "end": start + seconds, "next": start, "seconds": seconds}
+            rec = self.recording
+            rec.update(capture_id=uuid.uuid4().hex, kind="point" if selected else key, skipped=0)
+            diagnostics.event("recording.started", model="ranging", capture=rec["capture_id"],
+                              role=rec["role"], target=rec["kind"], delay_s=delay, duration_s=seconds,
+                              position=selected["position"] if selected else None)
             self.message = "Займите отмеченную точку или освободите комнату для записи фона."
         elif action in ("ranging_web_train", "ranging_web_validate"):
             self.process(action, snapshot, now, cmd)

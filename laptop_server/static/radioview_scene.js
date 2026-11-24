@@ -158,8 +158,7 @@ const RadioScene = (() => {
    darkness=from&&t<1?mix(fromDarkness,goalDarkness,ease):goalDarkness;
    if (darkness===1) {
     const pose=VisorGrain.projectPose(projection.point,person,joints,w,h);
-    drawGrain(ctx,w,h,radio,pose,gain);
-    return;
+    return drawGrain(ctx,w,h,radio,pose,gain);
    }
    const polygon=(points,y=0)=>projection.path(ctx,points.map(p=>flat(p,y)),true);
 

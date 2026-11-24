@@ -117,12 +117,14 @@ const VisorGrain = (() => {
    ctx.save();
    ctx.globalAlpha=alpha;
    ctx.fillStyle='#000';ctx.fillRect(0,0,w,h);
+   const drawn=Boolean(exposure&&pose&&alpha>.98);
    if (exposure) {
     ctx.imageSmoothingEnabled=false;
     ctx.drawImage(texture,0,0,w,h);
-    if (pose&&alpha>.98) drawPerson(ctx,pose.points,pose.scale);
+    if (drawn) drawPerson(ctx,pose.points,pose.scale);
    }
    ctx.restore();
+   return drawn;
   };
  }
 

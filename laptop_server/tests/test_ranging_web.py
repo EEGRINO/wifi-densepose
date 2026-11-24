@@ -1,9 +1,12 @@
+import json
 import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 
+import diagnostics
 from csi_ranging import fit, layout
 from localization import Localization
 from ranging_web import EMPTY_CHECK, REFERENCE, RangingWeb
@@ -89,6 +92,33 @@ class RangingWebTests(unittest.TestCase):
         status = self.command("status")
         self.assertEqual(status["live_state"], "unknown")
         self.assertEqual(status["live_reason"], "outside_calibration")
+
+    def test_journal_distinguishes_missing_model_background_and_outside_calibration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log = diagnostics.RunJournal("test", {}, Path(folder))
+            with patch.object(diagnostics, "current", log):
+                self.web.load()
+                self.web.observe_position(self.now)
+                base = np.tile(np.r_[np.ones(52), -.8, 2.5, np.full(52, .02)], 2)
+                point = base.copy()
+                point[52] += .25
+                self.feature = base.tolist()
+                model = fit(np.tile(base, (5, 1)), [np.tile(point, (5, 1))], [[1, 1]],
+                            layout(self.snapshot(self.now)), self.lines, anchor_only=True)
+                self.web.save(model=model)
+                self.web.observe_position(self.now)
+                point[52] += .6
+                self.feature = point.tolist()
+                self.web.observe_position(self.now)
+                self.web.observe_position(self.now)
+                point[52] -= .6
+                self.feature = point.tolist()
+                self.web.observe_position(self.now)
+            changes = [json.loads(line) for line in log.snapshot().splitlines()[1:]]
+            self.assertEqual([(row["live_state"], row["live_reason"]) for row in changes],
+                             [("model_needed", None), ("unknown", "near_background"),
+                              ("unknown", "outside_calibration"), ("estimated", "estimated")])
+            self.assertEqual(changes[-1]["position"], [1, 1])
 
     def test_capture_then_train_and_verify_with_radios_disconnected(self):
         promoted = self.add(4, 4, "test")

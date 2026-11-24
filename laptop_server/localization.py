@@ -11,6 +11,8 @@ import uuid
 
 import numpy as np
 
+import diagnostics
+
 from csi_packet import USEFUL_SC
 from signal_quality import SignalQuality
 from csi_record import write_recording
@@ -654,14 +656,24 @@ class Localization:
         self.message = f"Заход в {name} запланирован. Выйдите и закройте дверь до окончания отсчёта"
 
     def stop(self):
+        if self.recording:
+            self.log_recording_end(self.recording, "cancelled", "user_cancelled")
         self.recording = None
         self.message = "Запись отменена, незавершённые данные не сохранены"
+
+    @staticmethod
+    def log_recording_end(rec, result, reason=None):
+        diagnostics.event("recording.finished", model="sectors", capture=rec["id"],
+                          role=rec["role"], target="visit" if rec["role"] == "visit" else "empty" if rec["position"] is None else "point",
+                          result=result, reason=reason, windows=len(rec["X"]), skipped=rec["skipped"],
+                          skipped_quality=rec["skipped_quality"])
 
     def _finish(self):
         rec = self.recording
         self.recording = None
         minimum = max(8, int(rec["duration"] * 0.8))
         if len(rec["X"]) < minimum:
+            self.log_recording_end(rec, "failed", "too_few_windows")
             self.message = f"Запись не сохранена: {len(rec['X'])} окон, нужно хотя бы {minimum}. Проверьте обе ESP"
             return
         X = np.stack(rec["X"])
@@ -696,6 +708,7 @@ class Localization:
                 item["raw_capture_error"] = str(error)
         self.sessions.append({**item, "X": X})
         self._save()
+        self.log_recording_end(rec, "saved")
         self.message = f"Запись сохранена: {len(X)} окон; пропущено {rec['skipped']}"
         if item["raw_file"]:
             self.message += f"; сырых пакетов: {item['raw_packet_count']}"
@@ -817,7 +830,12 @@ class Localization:
         rec = self.recording
         if rec:
             if now >= rec["end"]:
-                self._finish()
+                try:
+                    self._finish()
+                except OSError as error:
+                    self.log_recording_end(rec, "failed", "save_failed")
+                    diagnostics.failure("recording.save_failed", error, model="sectors")
+                    raise
             elif now >= rec["start"]:
                 rec["quality_log"].append({"t": round(now - rec["start"], 3), "quality": quality})
                 if feature is None:

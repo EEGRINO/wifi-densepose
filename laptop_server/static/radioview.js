@@ -12,7 +12,7 @@
   waiting_signal:'Ожидание сигнала двух ESP',missing_lines:'Не хватает радиолиний',poor_signal:'Слабый сигнал',
   model_unreliable:'Модель требует проверки',background_failed:'Проверьте калибровку пустой комнаты',
   lines_changed:'Радиолинии изменились',unknown:'Зона не определена'};
- let connection=false, localization=null, ranging=null, presence=null, layout=null, layoutId='';
+ let connection=false, visorConnection=false, localization=null, ranging=null, presence=null, layout=null, layoutId='';
  let devices={}, view='map', receiverOptions='', receivers={esp1:'',esp2:''}, pointer=null, lastHud=0, primaryIp='';
 
  function text(id,value) {
@@ -156,19 +156,19 @@
   const loc=now-(localization?.receivedAt??-Infinity)<2700?localization:null;
   const estimate=loc?.estimate;
   if (estimate?.state==='estimated'&&layout?.cellAt(estimate.position)) {
-   return {point:estimate.position,state:'estimated',source:'Локализация по CSI'};
+   return {point:estimate.position,state:'estimated',source:'Локализация по CSI',model:estimate.mode==='ab'?'ab':'sectors'};
   }
-  if (estimate?.mode==='ab'||estimate?.state==='empty') return {state:estimate.state};
+  if (estimate?.mode==='ab'||estimate?.state==='empty') return {state:estimate.state,model:estimate.mode==='ab'?'ab':'sectors'};
   let detail='';
   if (loc&&ranging?.dataset?.id===loc.dataset?.id&&now-ranging.receivedAt<2700) {
    const point=ranging.estimate?.position;
    if (ranging.model_ready&&ranging.live_state==='estimated'&&layout?.cellAt(point)) {
-    return {point,state:'estimated',source:'Оценка по точкам дальности'};
+    return {point,state:'estimated',source:'Оценка по точкам дальности',model:'ranging'};
    }
    detail=rangingHint(ranging);
-   if (ranging.model_ready&&!loc.model_ready) return {state:ranging.live_state,detail};
+   if (ranging.model_ready&&!loc.model_ready) return {state:ranging.live_state,detail,model:'ranging'};
   }
-  if (loc?.model_ready) return {state:estimate?.state??'unknown',detail};
+  if (loc?.model_ready) return {state:estimate?.state??'unknown',detail,model:'sectors'};
   if (now-(presence?.receivedAt??-Infinity)<2500&&presence.active_links>0) {
    if (presence.state==='empty') return {state:'empty',detail};
    if (presence.state==='moving'||presence.state==='still') return {state:presence.state,detail};
@@ -209,6 +209,8 @@
  }
 
  const wsBase=`ws://${location.hostname||'127.0.0.1'}:8765`;
+ const diagnostic=typeof RadioDiagnostics==='undefined'?null:
+  RadioDiagnostics.connect(wsBase+'/diagnostics',byId('download-log'),byId('log-status'));
  function connect(path,command) {
   const socket=new WebSocket(wsBase+path);
   let requestTimer, lastRequest=-Infinity, pending=false;
@@ -218,6 +220,7 @@
    socket.send(JSON.stringify({cmd:command}));
   }
   function connectionLabel(live) {
+   if (path==='/visor') visorConnection=live;
    if (path!=='/') return;
    connection=live;
    byId('connection').dataset.live=String(live);
@@ -253,8 +256,8 @@
   };
  }
 
- function currentRadio(now) {
-  const packet=rawSamples.get(receivers[view]);
+ function currentRadio(now,key=view) {
+  const packet=rawSamples.get(receivers[key]);
   return packet&&now-packet.receivedAt<1100?packet:null;
  }
 
@@ -294,15 +297,33 @@
   text('pose-status',poseStatus);
  }
 
+ function reportDiagnostics(now,result,cell,radio,joints,drawn) {
+  if (!diagnostic) return;
+  diagnostic.report('view',{view,receiver:receivers[view]});
+  for (const key of keys) {
+   const receiver=receivers[key];
+   diagnostic.report('receiver',{view:key,receiver});
+   const packet=currentRadio(now,key);
+   const state=packet?.hasSignal?'ready':!visorConnection?'disconnected':
+    !receiver?'no_receiver':packet?'zero_iq':'no_iq';
+   diagnostic.report('signal',{view:key,receiver,state,iq_count:packet?.samples.length/2||0});
+  }
+  const state=!connection?'disconnected':!layout?'no_layout':result.state;
+  diagnostic.report('cell',{view,state,cell:cell?.label,model:result.model});
+  const reason=RadioDiagnostics.silhouetteReason(view,cell,radio,receivers[view],primaryIp,joints,drawn);
+  diagnostic.report('silhouette',{view,receiver:receivers[view],reason});
+ }
+
  function frame(now) {
   const result=positionAt(now);
   const cell=layout?.cellAt(result.point)??null;
   const radio=currentRadio(now);
   const joints=cell&&radio?.hasSignal?posePoints(radio.pose):null;
   trail.update(cell,now);
-  scene.draw(now,devices,trail.visible(now),cell?result.point:null,radio,joints,gainControl.valueAsNumber);
+  const drawn=scene.draw(now,devices,trail.visible(now),cell?result.point:null,radio,joints,gainControl.valueAsNumber);
   if (now-lastHud>=120) {
    updateHud(result,cell,radio,joints);
+   reportDiagnostics(now,result,cell,radio,joints,drawn);
    lastHud=now;
   }
   requestAnimationFrame(frame);

@@ -4,6 +4,20 @@ import math
 import socket
 import json
 import traceback
+import sys
+
+import diagnostics
+
+if __name__ == "__main__":
+    diagnostics.start("nn_pipeline.py")
+
+    def _log_unhandled(kind, error, tb):
+        diagnostics.failure("server.failed", error, phase="direct_entrypoint")
+        diagnostics.finish("failure")
+        sys.__excepthook__(kind, error, tb)
+
+    sys.excepthook = _log_unhandled
+
 import websockets
 import numpy as np
 import os
@@ -16,11 +30,12 @@ from presence import PresenceDetector
 from localization import Localization
 from ranging_web import RangingWeb
 from visor_csi import VisorCsi
+from diagnostics_socket import handle_socket as diagnostics_ws_handler
 
 # ── КОНФИГУРАЦИЯ ──────────────────────────────────────────────────────────────
 UDP_IP   = "0.0.0.0"
-UDP_PORT = 8080
-WS_PORT  = 8765
+UDP_PORT = diagnostics.UDP_PORTS[-1]
+WS_PORT  = diagnostics.WS_PORT
 LIVE_WRITE_LIMIT = 64 * 1024
 
 # Несколько ESP: калибровка активности/конечностей, vitals, карта комнаты — только с «основного».
@@ -1399,6 +1414,30 @@ def add_ranging_summary(status):
             "ranging_recording": ranging_web.recording is not None}
 
 
+def diagnostic_reason(error):
+    """Summarize predefined validation failures without copying messages or paths."""
+    if isinstance(error, OSError):
+        return "storage_error"
+    for prefix, reason in (
+        ("Нужны минимум 2 отдельные записи", "insufficient_training_recordings"),
+        ("Запишите пустую комнату и все точки", "missing_background_or_training_points"),
+        ("Мало пригодных окон", "too_few_windows"),
+        ("Сохраните план и позиции", "missing_plan_or_devices"),
+        ("Неизвестная модель", "unknown_algorithm"),
+        ("Запись уже идёт", "recording_in_progress"),
+        ("Дождитесь окончания", "recording_in_progress"),
+        ("Идёт запись на странице", "recording_in_progress"),
+        ("Открыт другой набор", "dataset_changed"),
+        ("Для записи нужны пригодные кадры", "waiting_signal"),
+        ("Для начала записи нужны данные", "waiting_signal"),
+        ("Не все выбранные радиолинии", "waiting_signal"),
+        ("Обучите модель, запишите все точки", "missing_validation_recordings"),
+    ):
+        if str(error).startswith(prefix):
+            return reason
+    return "invalid_request" if isinstance(error, (ValueError, TypeError, KeyError)) else "exception"
+
+
 async def handle_cmd(cmd: dict, ws):
     action = cmd.get("cmd", "")
 
@@ -1443,14 +1482,34 @@ async def handle_cmd(cmd: dict, ws):
             elif action == "localization_ab_stop":
                 localization.stop_ab_preview()
             elif action == "localization_train":
-                localization.train(cmd.get("algorithm", "ridge"))
+                algorithm = cmd.get("algorithm", "ridge")
+                diagnostics.event("training.started", model="sectors")
+                localization.train(algorithm)
                 localization.stop_ab_preview()
+                diagnostics.event("training.finished", model="sectors", result="trained",
+                                  algorithm=algorithm)
             elif action != "localization_status":
                 raise ValueError("Неизвестная команда локализации")
+            if action in ("localization_record", "localization_visit_a", "localization_visit_b"):
+                rec = localization.recording
+                diagnostics.event("recording.started", model="sectors", capture=rec["id"], role=rec["role"],
+                                  target="visit" if rec["role"] == "visit" else "empty" if rec["position"] is None else "point",
+                                  position=rec["visit"]["target"] if rec["role"] == "visit" else rec["position"],
+                                  delay_s=rec["delay"], duration_s=rec["duration"])
             status = add_ranging_summary(localization.status(time.monotonic()))
             await ws.send(_udp_payload_to_json({**status, "action": action}))
         except (ValueError, TypeError, OSError, ImportError) as error:
+            if action == "localization_train":
+                diagnostics.failure("training.finished", error, model="sectors", result="failed",
+                                    reason=diagnostic_reason(error))
+            elif action in ("localization_record", "localization_visit_a", "localization_visit_b"):
+                diagnostics.failure("recording.rejected", error, model="sectors",
+                                    reason=diagnostic_reason(error))
             await ws.send(json.dumps({"type": "localization_error", "message": str(error), "action": action}))
+        except Exception as error:
+            if action == "localization_train":
+                diagnostics.failure("training.finished", error, model="sectors", result="failed")
+            raise
         return
 
     if action == "calibrate_start":
@@ -1593,6 +1652,9 @@ async def handle_cmd(cmd: dict, ws):
         if limb_zone is not None:
             parts.append(f"зона «{LIMB_RU.get(limb_zone, limb_zone)}»: +{n_limb} CSI")
         message = " · ".join(parts)
+        diagnostics.event("pose.pairs_received", received=len(samples), accepted=n_cam,
+                          total_pairs=camera_pose_cal.n_samples, joints_per_pair=16,
+                          accepted_for_limb=n_limb, limb_only=skip_camera_pose)
 
         await ws.send(json.dumps({
             "type":              "camera_pose_ack",
@@ -1608,11 +1670,21 @@ async def handle_cmd(cmd: dict, ws):
         }))
 
     elif action == "camera_pose_train":
+        diagnostics.event("training.started", model="pose", pairs=camera_pose_cal.n_samples)
         try:
             ok, msg = await asyncio.to_thread(camera_pose_cal.train)
         except Exception as e:
             traceback.print_exc()
             ok, msg = False, str(e)
+            diagnostics.failure("training.finished", e, model="pose", result="failed",
+                                reason=diagnostic_reason(e), pairs=camera_pose_cal.n_samples)
+        else:
+            reason = next((code for prefix, code in (
+                ("Мало пар", "insufficient_pairs"), ("NaN/Inf", "nonfinite_training_data"),
+                ("lstsq:", "least_squares_failed"), ("неверная форма", "invalid_weights_shape"),
+            ) if msg.startswith(prefix)), "solver_failed") if not ok else None
+            diagnostics.event("training.finished", model="pose", result="trained" if ok else "failed",
+                              level="info" if ok else "warning", reason=reason, pairs=camera_pose_cal.n_samples)
         await ws.send(json.dumps({
             "type":    "camera_pose_ack",
             "status":  "trained" if ok else "train_fail",
@@ -1683,7 +1755,9 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
     global _last_log_no_ws, _last_log_json_err
     seen_src: set[str] = set()
     pkt_count = 0
+    malformed = 0
     last_stat  = time.monotonic()
+    last_error = float("-inf")
 
     while True:
         try:
@@ -1697,10 +1771,13 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
             for d, a in everything:
                 fr = csi_packet.parse(d)
                 if fr is None:
+                    malformed += 1
                     continue
                 presence.add(a[0], fr, t_wall)
                 localization.add(a[0], fr, now, raw_packet=d)
                 visor_key = visor_csi.add(a[0], fr, d, now)
+                if visor_key is not None:
+                    diagnostics.first_frame(a[0], fr, port, visor_csi.frames[visor_key]["iq"])
                 if not fr.from_node:
                     latest[a[0]] = (d, a, visor_key)
             batch = list(latest.values())
@@ -1741,10 +1818,17 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
                 broadcast_live(connected_clients, msg)
 
             if now - last_stat >= 30:
+                diagnostics.event("csi.udp_summary", port=port, received=pkt_count,
+                                  rejected_malformed=malformed)
+                malformed = 0
                 print(f"📊 UDP:{port} → {pkt_count} пакетов за 30с")
                 pkt_count = 0
                 last_stat = now
         except Exception as e:
+            now = time.monotonic()
+            if now - last_error >= 5:
+                diagnostics.failure("csi.receive_error", e, port=port)
+                last_error = now
             print(f"⚠️  UDP:{port} ошибка: {e}")
             await asyncio.sleep(0.05)
 
@@ -1754,7 +1838,7 @@ async def udp_listener():
 
     # Слушаем оба порта: 8080 (текущий) и 5555 (дефолт ESP / ruview_gateway)
     # чтобы поймать данные независимо от настроек ESP32
-    ports = sorted({UDP_PORT, 5555})
+    ports = diagnostics.UDP_PORTS
     tasks = []
 
     for port in ports:
@@ -1768,15 +1852,19 @@ async def udp_listener():
             sock.bind((UDP_IP, port))
             sock.setblocking(False)
             tasks.append(_udp_loop(sock, port, loop))
+            diagnostics.event("server.socket_bound", protocol="udp", port=port)
             print(f"📡 UDP слушаем порт {port}")
         except Exception as e:
+            diagnostics.failure("server.bind_failed", e, protocol="udp", port=port)
             print(f"⚠️  Не удалось занять UDP порт {port}: {e}")
             sock.close()
 
     if not tasks:
+        diagnostics.event("server.udp_unavailable", level="error", reason="no_udp_ports_bound")
         print("❌ Не удалось открыть ни одного UDP порта!")
         return
 
+    diagnostics.event("server.ready")
     print(f"🚀 Сервер запущен!  WebSocket :{WS_PORT}")
     print(f"💡 Ожидаем пакеты от ESP32 (порт 8080 или 5555)")
     if CSI_PRIMARY_IP:
@@ -1800,10 +1888,27 @@ async def ranging_ws_handler(websocket):
             if action == "ranging_status":
                 await handle_cmd(command, websocket)
             elif isinstance(action, str) and action.startswith("ranging_web_"):
+                operation = {"ranging_web_train": "training", "ranging_web_validate": "validation"}.get(action)
+                if operation:
+                    diagnostics.event(f"{operation}.started", model="ranging")
                 try:
                     response = ranging_web.handle(command, time.monotonic())
                 except (ValueError, TypeError, KeyError, OSError) as error:
+                    if operation:
+                        diagnostics.failure(f"{operation}.finished", error, model="ranging",
+                                            result="failed", reason=diagnostic_reason(error))
+                    elif action == "ranging_web_record":
+                        diagnostics.failure("recording.rejected", error, model="ranging",
+                                            reason=diagnostic_reason(error))
                     response = {"type": "ranging_web_error", "message": str(error)}
+                except Exception as error:
+                    if operation:
+                        diagnostics.failure(f"{operation}.finished", error, model="ranging", result="failed")
+                    raise
+                else:
+                    if operation:
+                        diagnostics.event(f"{operation}.finished", model="ranging",
+                                          result="trained" if operation == "training" else "completed")
                 await websocket.send(_udp_payload_to_json({**response, "request_id": command.get("request_id")}))
     except websockets.exceptions.ConnectionClosed:
         pass
@@ -1812,6 +1917,12 @@ async def ranging_ws_handler(websocket):
 async def ws_handler(websocket):
     request = getattr(websocket, "request", None)
     path = request.path if request is not None else getattr(websocket, "path", "")
+    if path == "/diagnostics":
+        try:
+            await diagnostics_ws_handler(websocket)
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        return
     if path == "/ranging":
         await ranging_ws_handler(websocket)
         return
@@ -1899,14 +2010,53 @@ async def presence_loop():
         await asyncio.sleep(0.2)
 
 
+def observe_localization(status, now):
+    journal = diagnostics.current
+    if not journal or not journal.available:
+        return
+    active = status["active_lines"]
+    expected = status["lines"]
+    quality = status["quality"]
+    if now >= journal.next_summary and set(active) - set(quality["lines"]):
+        quality = localization.signal_quality.assess(sorted(set(active) | set(expected)), now)
+    diagnostics.observe_signal(quality, active, now)
+    estimate = status["estimate"]
+    state = estimate["state"]
+    preview = status["ab_preview"]
+    reasons = {"empty": "near_background", "missing_lines": "waiting_signal", "untrained": "model_needed"}
+    if not preview:
+        reasons["unknown"] = "outside_calibration"
+    diagnostics.position(
+        "ab" if preview else "sectors", state=state, reason=reasons.get(state, state),
+        active_lines=active, expected_lines=expected,
+        ready=preview["phase"] == "active" if preview else status["model_ready"],
+        point=estimate["position"], sector=estimate.get("sector"),
+    )
+    if not ranging_web.load_for_diagnostics():
+        return
+    models = (status["model_ready"], ranging_web.data.get("model") is not None, _W_MATRIX is not None)
+    dataset = diagnostics.dataset_id(status["dataset"])
+    journal.changed("server.context", "server.context", (dataset, models, _W_FROM_CAMERA), dataset=dataset,
+                    models=dict(zip(("sectors", "ranging", "pose"), models)),
+                    pose_weights="camera" if _W_FROM_CAMERA else "bundled" if _W_MATRIX is not None else "none")
+    ranging_web.observe_position(now)
+
+
 async def localization_loop():
+    last_error = float("-inf")
     while True:
+        now = time.monotonic()
         try:
-            status = localization.tick(time.monotonic())
+            status = localization.tick(now)
             if status and localization_clients:
                 message = _udp_payload_to_json(add_ranging_summary(status))
                 broadcast_live(localization_clients, message)
-        except Exception:
+            if status:
+                observe_localization(status, now)
+        except Exception as error:
+            if now - last_error >= 5:
+                diagnostics.failure("localization.tick_failed", error)
+                last_error = now
             traceback.print_exc()
         await asyncio.sleep(0.2)
 
@@ -1919,8 +2069,31 @@ async def ranging_loop():
 
 async def main():
     # большие JSON-пакеты с сотнями пар CSI+поза
-    async with websockets.serve(ws_handler, "0.0.0.0", WS_PORT, max_size=16 * 1024 * 1024):
+    try:
+        server = await websockets.serve(ws_handler, "0.0.0.0", WS_PORT, max_size=16 * 1024 * 1024)
+    except OSError as error:
+        diagnostics.failure("server.bind_failed", error, protocol="websocket", port=WS_PORT)
+        raise
+    try:
+        diagnostics.event("server.socket_bound", protocol="websocket", port=WS_PORT)
+        diagnostics.event("server.initial_context", pin=True, dataset=diagnostics.dataset_id(localization.dataset),
+                          models={"sectors": localization.model is not None,
+                                  "ranging": _ranging_model_exists(),
+                                  "pose": _W_MATRIX is not None},
+                          pose_weights="camera" if _W_FROM_CAMERA else "bundled" if _W_MATRIX is not None else "none")
         await asyncio.gather(udp_listener(), presence_loop(), localization_loop(), ranging_loop())
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+def _ranging_model_exists():
+    try:
+        ranging_web.load()
+        return ranging_web.data.get("model") is not None
+    except (ValueError, OSError, AttributeError) as error:
+        diagnostics.failure("ranging.model_load_failed", error)
+        return False
 
 
 if __name__ == "__main__":
@@ -1937,9 +2110,11 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
+        diagnostics.finish("keyboard_interrupt")
         print("\n🛑 Сервер остановлен.")
     except OSError as e:
-        if e.errno == errno.EADDRINUSE:
+        if e.errno in (errno.EADDRINUSE, 10048):
+            diagnostics.finish("port_in_use")
             print(
                 f"\n❌ Порт {WS_PORT} уже занят — скорее всего уже запущен nn_pipeline или ruview_gateway.\n"
                 f"   Завершите процесс:  fuser -k {WS_PORT}/tcp\n"

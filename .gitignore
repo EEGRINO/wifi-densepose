@@ -40,3 +40,4 @@ laptop_server/models/camera_pose_W.npz
 
 # Размеченные CSI-записи локализации
 laptop_server/localization_data/
+laptop_server/logs/

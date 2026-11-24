@@ -43,6 +43,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import diagnostics
 from csi_packet import USEFUL_SC, CsiFrame, link_name
 
 STATE_RU = {
@@ -151,9 +152,19 @@ class PresenceDetector:
         """
         self._cal = {"start": now + delay, "end": now + delay + seconds, "profile_only": profile_only,
                      "motion": collections.defaultdict(list), "prof": collections.defaultdict(list)}
+        diagnostics.event("recording.started", model="presence",
+                          target="rebaseline" if profile_only else "background", delay_s=delay, duration_s=seconds)
 
     def cancel_calibration(self) -> None:
+        if self._cal:
+            self._log_calibration(self._cal, "cancelled", "user_cancelled")
         self._cal = None
+
+    def _log_calibration(self, cal, result, reason=None):
+        diagnostics.event("recording.finished", model="presence", result=result, reason=reason,
+                          target="rebaseline" if cal["profile_only"] else "background",
+                          profile_windows=sum(map(len, cal["prof"].values())),
+                          motion_windows=sum(map(len, cal["motion"].values())), lines=len(cal["prof"]))
 
     def _reset_after_baseline(self, now: float | None = None) -> None:
         """После нового эталона комната пуста по определению; таймер автообновления — с нуля."""
@@ -275,7 +286,14 @@ class PresenceDetector:
 
         cal_msg = None
         if self._cal and now > self._cal["end"]:
-            ok, cal_msg = self._finish_calibration()
+            cal = self._cal
+            try:
+                ok, cal_msg = self._finish_calibration()
+            except OSError as error:
+                self._log_calibration(cal, "failed", "save_failed")
+                diagnostics.failure("recording.save_failed", error, model="presence")
+                raise
+            self._log_calibration(cal, "saved" if ok else "failed", None if ok else "too_few_windows")
 
         st: dict = {"type": "presence", "t": now, "links": per_link}
         if cal_msg:

@@ -8,6 +8,10 @@ a{color:#98dcff;text-underline-offset:.22em}
 .back{font-size:.9rem}
 h1{margin:.1em 0 0;font-size:clamp(1.8rem,4vw,3rem);letter-spacing:-.04em}
 .connection{margin-bottom:6px;padding:5px 10px;border:1px solid var(--line);border-radius:7px;color:var(--muted);font-size:.82rem;text-align:center}
+.header-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}
+.header-actions .connection{margin:0}
+#log-status{flex-basis:100%;text-align:right;color:var(--muted);font-size:.82rem}
+#log-status:empty{display:none}
 .connection[data-live="true"]{border-color:#3c7767;color:var(--signal)}
 .workspace{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:16px;align-items:start}
 .panel{border:1px solid var(--line);background:var(--panel);border-radius:14px;overflow:hidden}

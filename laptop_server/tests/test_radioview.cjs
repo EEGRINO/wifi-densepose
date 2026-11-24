@@ -112,6 +112,69 @@ test('gives weak nonzero I/Q a visible exposure and keeps zero data black', () =
  assert.equal(VisorGrain.displayExposure(new Float32Array(64)),0);
 });
 
+test('reports a cell and separate reasons when switching between the primary and secondary ESP', () => {
+ const elements=new Map(), sockets=new Map();
+ const get=id=>{
+  if (!elements.has(id)) elements.set(id,{dataset:{},addEventListener(){},setAttribute(){},
+   replaceChildren(){},focus(){}});
+  return elements.get(id);
+ };
+ let frame;
+ class Socket {
+  static OPEN=1;
+  readyState=1;
+  sent=[];
+  constructor(url) {sockets.set(new URL(url).pathname,this);}
+  send(wire) {this.sent.push(JSON.parse(wire));}
+ }
+ const scene={setLayout(){},select(){return true;},heading(){return 0;},draw(){return false;}};
+ const read=name=>readFileSync(join(__dirname,'../static',name),'utf8');
+ const a='192.168.1.2', b='192.168.1.3';
+ runInNewContext(read('radioview_diagnostics.js')+'\n'+read('radioview.js'),{
+  RadioScene:{...RadioScene,scene:()=>scene,drawSpectrum(){}},VisorGrain,
+  document:{getElementById:get,addEventListener(){}},location:{hostname:'127.0.0.1'},
+  localStorage:{getItem:()=>JSON.stringify({esp1:a,esp2:b})},
+  WebSocket:Socket,Option:class {},setInterval(){},performance:{now:()=>100},
+  requestAnimationFrame:callback=>{frame=callback;},
+ });
+ const send=(path,message)=>sockets.get(path).onmessage({data:JSON.stringify(message)});
+ sockets.get('/').onopen();
+ sockets.get('/visor').onopen();
+ const dataset={id:'test'};
+ send('/',{type:'status',csi_primary_ip:a});
+ send('/',{type:'localization',dataset,room:{width:6,depth:4},
+  devices:{esp1:{position:[1,1]},esp2:{position:[5,3]}},
+  model_ready:false,estimate:{state:'untrained'}});
+ send('/ranging',{type:'ranging_web',dataset,model_ready:true,live_state:'estimated',estimate:{position:[3.4,2.5]}});
+ const iq=Buffer.alloc(128,1).toString('base64');
+ send('/visor',{type:'visor_csi',frames:[a,b].map(receiver=>({receiver,iq,age_ms:0,sequence:1}))});
+ get('esp1-view').onclick();
+ frame(240);
+ frame(370);
+ get('esp2-view').onclick();
+ frame(500);
+ const sent=sockets.get('/diagnostics').sent;
+ const cells=sent.filter(row=>row.event==='cell');
+ assert.deepEqual(cells.map(({cell,model})=>[cell,model]),[['D3','ranging'],['D3','ranging']]);
+ assert.deepEqual(sent.filter(row=>row.event==='silhouette').map(row=>[row.view,row.reason]),
+  [['esp1','no_pose'],['esp2','other_receiver']]);
+ assert.deepEqual(sent.filter(row=>row.event==='signal').map(row=>[row.view,row.state]),
+  [['esp1','ready'],['esp2','ready']]);
+});
+
+test('journal distinguishes missing position, I/Q, secondary receiver, pose and drawn silhouette', () => {
+ const script=readFileSync(join(__dirname,'../static/radioview_diagnostics.js'),'utf8');
+ const reason=runInNewContext(script+'\nRadioDiagnostics.silhouetteReason');
+ const signal={hasSignal:true}, cell={label:'A1'}, joints=[[.2,.3]];
+ assert.equal(reason('map',cell,signal,'a','a',joints,false),'map_view');
+ assert.equal(reason('esp1',null,signal,'a','a',null,false),'no_position');
+ assert.equal(reason('esp1',cell,null,'a','a',null,false),'no_iq');
+ assert.equal(reason('esp2',cell,signal,'b','a',null,false),'other_receiver');
+ assert.equal(reason('esp1',cell,signal,'a','a',null,false),'no_pose');
+ assert.equal(reason('esp1',cell,signal,'a','a',joints,false),'outside_view');
+ assert.equal(reason('esp1',cell,signal,'a','a',joints,true),'drawn');
+});
+
 test('requires a position and live pose to project a silhouette and hides it behind the view', () => {
  const points=Array.from({length:16},(_,i)=>[.4+i*.01,.2+i*.03]);
  const forward=([x,y])=>[200+x,320-y*100];

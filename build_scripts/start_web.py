@@ -64,22 +64,44 @@ async def run_csi_server(pipeline, open_browser):
 
 
 def serve(open_browser):
-    for port in (HTTP_PORT, WS_PORT):
-        if is_listening(port):
-            raise RuntimeError(f"Порт {port} уже занят. Если WiFi DensePose запущен, откройте {START_PAGE}")
-
     sys.path.insert(0, str(SERVER_DIR))
-    import nn_pipeline
+    import diagnostics
 
-    static = partial(SimpleHTTPRequestHandler, directory=SERVER_DIR / "static")
-    with ThreadingHTTPServer((LOOPBACK, HTTP_PORT), static) as http:
-        worker = Thread(target=http.serve_forever, daemon=True)
-        worker.start()
-        try:
-            asyncio.run(run_csi_server(nn_pipeline, open_browser))
-        finally:
-            http.shutdown()
-            worker.join()
+    diagnostics.start("start_web.py", http_port=HTTP_PORT)
+    phase = "preflight"
+    try:
+        for port in (HTTP_PORT, WS_PORT):
+            if is_listening(port):
+                diagnostics.event("server.bind_failed", level="error", protocol="tcp",
+                                  port=port, reason="port_in_use")
+                raise RuntimeError(f"Порт {port} уже занят. Если WiFi DensePose запущен, откройте {START_PAGE}")
+
+        phase = "load_pipeline"
+        import nn_pipeline
+
+        phase = "bind_http"
+        static = partial(SimpleHTTPRequestHandler, directory=SERVER_DIR / "static")
+        with ThreadingHTTPServer((LOOPBACK, HTTP_PORT), static) as http:
+            diagnostics.event("server.socket_bound", protocol="http", port=HTTP_PORT)
+            phase = "serve"
+            worker = Thread(target=http.serve_forever, daemon=True)
+            worker.start()
+            try:
+                asyncio.run(run_csi_server(nn_pipeline, open_browser))
+            finally:
+                http.shutdown()
+                worker.join()
+    except KeyboardInterrupt:
+        diagnostics.finish("keyboard_interrupt")
+        raise
+    except Exception as error:
+        if phase == "bind_http":
+            diagnostics.failure("server.bind_failed", error, protocol="http", port=HTTP_PORT)
+        diagnostics.failure("server.failed", error, phase=phase)
+        diagnostics.finish("failure")
+        raise
+    else:
+        diagnostics.finish("normal")
 
 
 def main():
