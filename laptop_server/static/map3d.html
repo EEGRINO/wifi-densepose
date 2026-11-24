@@ -819,7 +819,7 @@
       <div class="badge">Поза <b>шаблоны</b></div>
     </div>
 
-    <div class="plabel">Human Pose Estimation · Live Inference</div>
+    <div class="plabel">Оценка позы по CSI</div>
   </div>
 
 </div><!-- panels -->
@@ -1732,8 +1732,7 @@ function syncHeightModeUI() {
 const _projV = new THREE.Vector3();
 
 // ── EMA tracking для per-joint реактивности ───────────────────
-// EMA выхода нейросети: «быстрый» и «медленный» — дельта = смесь, иначе медленный жест
-// (рука вверх) почти целиком уходит в EMA и скелет не двигается.
+// Разность быстрого и медленного сглаживания оценки суставов сохраняет медленные жесты.
 const skelEMA     = new Float32Array(32).fill(0);
 const skelSlowEMA = new Float32Array(32).fill(0);
 let   _emaReady = false;
@@ -1857,7 +1856,7 @@ function _maxLimbScore(limbScores) {
   return m;
 }
 
-/** Сглаживание вероятностей зон (нейросеть или центроиды) — стабильнее трекинг */
+/** Сглаживание оценок сходства сигнала с профилями зон. */
 const _limbProbSmoothed = {};
 function smoothLimbMatchScores(raw) {
   if (!raw || typeof raw !== 'object') return null;

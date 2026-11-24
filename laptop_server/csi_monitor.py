@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Диагностика потока CSI от ESP32 (без браузера и нейросетей).
+Диагностика потока CSI от ESP32 в терминале.
 
   venv/bin/python csi_monitor.py            # порт 5555
   venv/bin/python csi_monitor.py --port 8080
