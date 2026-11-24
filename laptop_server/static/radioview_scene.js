@@ -122,7 +122,7 @@ const RadioScene = (() => {
  function scene(canvas) {
   let layout=null, view='map', camera=null, from=null, moved=0, yaw=0, pitch=.18;
   let darkness=0, fromDarkness=0;
-  const drawGrain=VisorGrain.grain();
+  const drawIQ=VisorGrain.iqPlot();
   const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function select(mode, devices, aim, now) {
@@ -142,13 +142,23 @@ const RadioScene = (() => {
    return true;
   }
 
-  function draw(now,devices,trail,person,radio,joints,gain) {
+  function mapScale(w,h) {return .78*Math.min(w/layout.width,h/layout.depth);}
+
+  function mapCellAt(clientX,clientY) {
+   if (!layout||view!=='map'||darkness>0) return null;
+   const {left,top,width,height}=canvas.getBoundingClientRect();
+   const scale=mapScale(width,height);
+   return layout.cellAt([layout.center[0]+(clientX-left-width/2)/scale,
+                         layout.center[1]+(clientY-top-height/2)/scale]);
+  }
+
+  function draw(now,devices,trail,person,radio,joints,gain,guide) {
    const surface=canvasContext(canvas);
    if (!surface||!layout) return;
    const {ctx,w,h}=surface, node=devices[view];
    const [cx,cz]=layout.center;
    const focal=Math.min(w,h)*.8;
-   const top={x:cx,y:Math.max(focal*layout.width/(w*.78),focal*layout.depth/(h*.78)),z:cz,yaw:0,pitch:Math.PI/2};
+   const top={x:cx,y:focal/mapScale(w,h),z:cz,yaw:0,pitch:Math.PI/2};
    const goal=node?{x:node.position[0],y:Math.max(.15,node.height??1.15),z:node.position[1],yaw,pitch}:top;
    const t=clamp((now-moved)/800,0,1), ease=t*t*(3-2*t);
    camera=from&&t<1?{x:mix(from.x,goal.x,ease),y:mix(from.y,goal.y,ease),z:mix(from.z,goal.z,ease),
@@ -158,7 +168,7 @@ const RadioScene = (() => {
    darkness=from&&t<1?mix(fromDarkness,goalDarkness,ease):goalDarkness;
    if (darkness===1) {
     const pose=VisorGrain.projectPose(projection.point,person,joints,w,h);
-    return drawGrain(ctx,w,h,radio,pose,gain);
+    return drawIQ(ctx,w,h,radio,pose,gain,now);
    }
    const polygon=(points,y=0)=>projection.path(ctx,points.map(p=>flat(p,y)),true);
 
@@ -180,11 +190,21 @@ const RadioScene = (() => {
     ctx.fillStyle=`rgba(80,238,169,${alpha*.49})`;ctx.fill();
     ctx.strokeStyle=`rgba(138,255,200,${alpha*.86})`;ctx.lineWidth=2;ctx.stroke();
    }
+   for (const cell of guide?.cells??[]) {
+    const active=sameCell(cell,guide.target);
+    ctx.beginPath();
+    if (!polygon(cell.polygon)) continue;
+    ctx.fillStyle=active?'#ca253f':'rgba(87,180,244,.34)';ctx.fill();
+    ctx.strokeStyle=active?'#ffdce1':'#80cdfa';ctx.lineWidth=active?3:2;ctx.stroke();
+   }
    if (!node&&(!from||t===1)) {
-    ctx.font='11px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.textAlign='center';ctx.textBaseline='middle';
     for (const cell of layout.labels) {
      const p=projection.point(flat(cell.center));
-     if (p) {ctx.fillStyle='#9db5c7';ctx.fillText(cell.label,...p);}
+     if (!p) continue;
+     const active=sameCell(cell,guide?.target);
+     ctx.font=active?`700 ${clamp(mapScale(w,h)*layout.size*.36,12,26)}px system-ui`:'11px system-ui';
+     ctx.fillStyle=active?'#fff':'#9db5c7';ctx.fillText(cell.label,...p);
     }
    }
    ctx.restore();
@@ -201,11 +221,11 @@ const RadioScene = (() => {
     ctx.lineWidth=3;ctx.strokeStyle='#0a1721';ctx.strokeText(names[key],p[0]+9,p[1]-8);
     ctx.fillText(names[key],p[0]+9,p[1]-8);
    }
-   if (darkness>0) drawGrain(ctx,w,h,radio,null,gain,darkness);
+   if (darkness>0) drawIQ(ctx,w,h,radio,null,gain,now,darkness);
   }
 
   return {
-   select,draw,
+   select,draw,mapCellAt,
    setLayout(next) {layout=next;view='map';from=null;camera=null;darkness=0;},
    rotate(dx,dy) {yaw=angle(yaw+dx);pitch=clamp(pitch+dy,-1.15,1.3);},
    heading() {return (Math.round(yaw*180/Math.PI)+360)%360;}
@@ -224,20 +244,41 @@ const RadioScene = (() => {
   });
  }
 
+ function poseSmoother() {
+  let points=null, source=null, updatedAt=0;
+  return {
+   update(next, nextSource, now) {
+    const elapsed=now-updatedAt;
+    if (!next||!points||source!==nextSource||elapsed>500) {
+     points=next;
+    } else {
+     const alpha=1-Math.exp(-Math.max(0,elapsed)/220);
+     points=next.map((point,i)=>point&&points[i]?
+      [mix(points[i][0],point[0],alpha),mix(points[i][1],point[1],alpha)]:point);
+    }
+    source=nextSource;
+    updatedAt=now;
+    return points;
+   }
+  };
+ }
+
  function drawPose(canvas,points) {
   const surface=canvasContext(canvas);
   if (!surface||!points) return;
   const {ctx,w,h}=surface;
-  const xs=points.map(p=>p[0]),ys=points.map(p=>p[1]);
-  const x0=Math.min(...xs),y0=Math.min(...ys),width=Math.max(...xs)-x0,height=Math.max(...ys)-y0;
-  const scale=Math.min((w-24)/Math.max(.03,width),(h-20)/Math.max(.03,height));
-  const pose=points.map(([x,y])=>[(w-width*scale)/2+(x-x0)*scale,(h-height*scale)/2+(y-y0)*scale]);
+  const cameraHeight=Math.max(1,Math.min(h-24,(w-24)*.75));
+  const cameraWidth=cameraHeight*4/3;
+  const pose=points.map(p=>p?[w/2+(p[0]-.5)*cameraWidth,h/2+(p[1]-.5)*cameraHeight]:null);
   ctx.strokeStyle='#79d7ff';ctx.lineWidth=2;ctx.lineCap='round';ctx.beginPath();
-  for (const [a,b] of bones) {ctx.moveTo(...pose[a]);ctx.lineTo(...pose[b]);}
+  for (const [a,b] of bones) {
+   if (!pose[a]||!pose[b]) continue;
+   ctx.moveTo(...pose[a]);ctx.lineTo(...pose[b]);
+  }
   ctx.stroke();
   ctx.fillStyle='#d7f2ff';
-  for (const p of pose) {ctx.beginPath();ctx.arc(...p,2,0,TAU);ctx.fill();}
+  for (const p of pose.filter(Boolean)) {ctx.beginPath();ctx.arc(...p,2,0,TAU);ctx.fill();}
  }
 
- return {grid,trail,scene,drawSpectrum,drawPose,colors,names};
+ return {grid,trail,scene,drawSpectrum,drawPose,poseSmoother,colors,names};
 })();

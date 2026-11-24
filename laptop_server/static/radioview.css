@@ -25,9 +25,26 @@ button:disabled,select:disabled{opacity:.45;cursor:default}
 button:focus-visible,select:focus-visible,canvas:focus-visible{outline:2px solid #9beaff;outline-offset:-2px}
 .view-controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 #full-view{border-color:var(--line);font-size:.8rem}
+.calibration{padding:12px 15px;border-top:1px solid var(--line);background:#0d1823}
+.calibration-setup{display:grid;gap:9px}
+.calibration-setup p,.calibration-picker,.calibration-progress{color:var(--muted);font-size:.85rem}
+.calibration-picker{display:flex;align-items:center;gap:8px;width:fit-content}
+.calibration-picker select{width:auto;min-width:100px}
+.calibration-points,.calibration-actions{display:flex;gap:6px;flex-wrap:wrap}
+.calibration-points:empty{display:none}
+.calibration button,#calibration-open{border-color:var(--line)}
+.calibration .calibration-primary{background:#174963;border-color:#326b89}
+.calibration-step{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 12px}
+#calibration-target{display:block;color:#ffadb8;font-size:clamp(1.5rem,5vw,2.8rem);line-height:1.1}
+#calibration-instruction{margin-top:4px;font-size:1rem}
+#calibration-timer{font-size:clamp(2rem,6vw,3.5rem);font-variant-numeric:tabular-nums;line-height:1}
+#calibration-stop{grid-column:2;justify-self:end}
+#calibration-status{margin-top:6px;color:#f4c99e}
+#calibration-train{margin-top:9px}
 .esp-a{color:var(--a)}.esp-b{color:var(--b)}
 .viewport{position:relative;background:#081119;border-block:1px solid var(--line)}
 #room{display:block;width:100%;height:clamp(360px,62vh,710px);touch-action:pan-y}
+#room[data-select-cells="true"]{cursor:crosshair}
 #room[data-orbit="true"]{cursor:grab;touch-action:none}
 #room[data-orbit="true"]:active{cursor:grabbing}
 .viewport[data-expanded="true"]{position:fixed;inset:0;z-index:10;border:0;background:#000}
@@ -49,8 +66,26 @@ select{width:100%;padding:5px 8px;background:#0b1723;border:1px solid var(--line
 .readout canvas{display:block;width:100%;height:62px;margin-top:8px;background:#0a1722;border-radius:6px}
 .readout #pose{height:139px}
 .graph-label{font-size:.75rem}
-.grain-setting{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:0 8px;margin:8px 0;color:var(--muted)}
-.grain-setting output{font-size:.82rem;font-variant-numeric:tabular-nums}
-.grain-setting input{grid-column:1/-1;width:100%;margin:2px 0;accent-color:var(--a)}
+.iq-trail-setting{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:0 8px;margin:8px 0;color:var(--muted)}
+.iq-trail-setting output{font-size:.82rem;font-variant-numeric:tabular-nums}
+.iq-trail-setting input{grid-column:1/-1;width:100%;margin:2px 0;accent-color:var(--a)}
+.iq-trail-legend{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:.75rem}
+.iq-trail-gradient{flex:1;height:4px;border-radius:5px;background:linear-gradient(90deg,#fff0bc,#60bfe4,#3568a0)}
+.shape-workspace{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;max-width:1000px}
+.shape-calibration p{margin:0 0 8px}
+.shape-grid{display:grid;gap:2px;margin:12px 0 6px;width:min(100%,340px)}
+.shape-grid button{background:#0b1723;border-color:#3b536b;border-radius:3px;padding:0;aspect-ratio:1.25}
+.shape-grid button[aria-pressed="true"]{background:#4ba6c9;border-color:#98dcff}
+.shape-axis{align-self:center;text-align:center;color:var(--muted);font-size:.72rem;min-width:1rem}
+.shape-calibration button:not(.shape-grid button){border-color:var(--line)}
+.shape-calibration .calibration-primary{background:#174963;border-color:#326b89}
+.shape-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.shape-timer{display:block;font-size:1.25rem;margin-top:6px;font-variant-numeric:tabular-nums}
+.shape-preview canvas{max-width:210px;height:auto;aspect-ratio:1;image-rendering:pixelated}
+.shape-preview a{display:inline-block;margin-top:6px;font-size:.85rem}
+.shape-captures{padding-left:18px;margin:8px 0;font-size:.85rem}
+.shape-captures li{padding:3px 0}
+.shape-captures button{margin-left:6px;padding:2px 5px}
+@media(max-width:700px){.shape-workspace{grid-template-columns:1fr}}
 @media(max-width:850px){.workspace{grid-template-columns:1fr}.workspace aside{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.readout{margin:0}#room{height:clamp(305px,55vh,600px)}}
 @media(max-width:440px){.toolbar,.stage-foot{padding:8px;flex-wrap:wrap}}

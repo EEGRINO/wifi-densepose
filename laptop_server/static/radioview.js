@@ -5,8 +5,9 @@
  const keys=['esp1','esp2'];
  const canvas=byId('room');
  const viewport=byId('viewport');
- const gainControl=byId('grain-gain');
+ const gainControl=byId('iq-trail-gain');
  const scene=RadioScene.scene(canvas), trail=RadioScene.trail();
+ const poseSmoothing=RadioScene.poseSmoother();
  let rawSamples=new Map();
  const estimateLabels={empty:'Пустая комната',untrained:'Нужна калибровка',model_needed:'Нужна калибровка',
   waiting_signal:'Ожидание сигнала двух ESP',missing_lines:'Не хватает радиолиний',poor_signal:'Слабый сигнал',
@@ -14,13 +15,21 @@
   lines_changed:'Радиолинии изменились',unknown:'Зона не определена'};
  let connection=false, visorConnection=false, localization=null, ranging=null, presence=null, layout=null, layoutId='';
  let devices={}, view='map', receiverOptions='', receivers={esp1:'',esp2:''}, pointer=null, lastHud=0, primaryIp='';
+ let requestedView={'#esp-a':'esp1','#esp-b':'esp2'}[location.hash];
+ let localizationSocket=null;
+ const calibration=typeof RadioCalibration==='undefined'?null:
+  RadioCalibration.mount(byId,canvas,scene,()=>viewMode('map'),(cmd,fields)=>{
+   if (localizationSocket?.readyState!==WebSocket.OPEN) return false;
+   localizationSocket.send(JSON.stringify({cmd,...fields}));
+   return true;
+  });
 
  function text(id,value) {
   const el=byId(id);
   if (el.textContent!==value) el.textContent=value;
  }
 
- gainControl.oninput=()=>text('grain-gain-value',`×${Number(gainControl.value).toLocaleString('ru-RU')}`);
+ gainControl.oninput=()=>text('iq-trail-gain-value',`×${Number(gainControl.value).toLocaleString('ru-RU')}`);
 
  function bindReceivers() {
   const available=new Set(Object.values(receivers).filter(Boolean));
@@ -53,14 +62,16 @@
  };
 
  function viewMode(next,now=performance.now()) {
+  if (next!=='map'&&calibration?.active()) return;
   const aim=positionAt(now).point;
   if (!scene.select(next,devices,aim,now)) return;
+  if (next!=='map') calibration?.dismiss();
   view=next;
   for (const key of ['map',...keys]) byId(`${key}-view`).setAttribute('aria-pressed',String(key===view));
   byId('radio-panel').hidden=view==='map';
   byId('full-view').hidden=view==='map';
   canvas.dataset.orbit=String(view!=='map');
-  text('stage-hint',view==='map'?'Выберите ESP для обзора с её позиции.':'Поворот на 360° мышью или стрелками');
+  text('stage-hint',view==='map'?'Выберите ESP для обзора с её позиции.':'След изменений CSI на плоскости I/Q');
   byId('grid-label').hidden=!layout||view!=='map';
   updateViewHeading();
  }
@@ -70,6 +81,7 @@
  }
 
  for (const id of ['map',...keys]) byId(`${id}-view`).onclick=()=>{
+  requestedView=null;
   viewMode(id);
   if (view!=='map') canvas.focus({preventScroll:true});
  };
@@ -130,6 +142,10 @@
   if (changedDataset) {
    let saved={};
    try {saved=JSON.parse(localStorage.getItem(storageKey()))??{};} catch (_) {}
+   if (data.guided_calibration?.state==='running'&&!saved.esp1&&!saved.esp2) {
+    saved=receivers;
+    try {localStorage.setItem(storageKey(),JSON.stringify(saved));} catch (_) {}
+   }
    receivers={esp1:typeof saved.esp1==='string'?saved.esp1:'',esp2:typeof saved.esp2==='string'?saved.esp2:''};
    if (receivers.esp2===receivers.esp1) receivers.esp2='';
   }
@@ -139,6 +155,11 @@
   byId('grid-label').hidden=!layout||view!=='map';
   text('grid-label',layout?`Клетка ${layout.size} × ${layout.size} м`:'');
   bindReceivers();
+  calibration?.update(data,layout);
+  if (requestedView&&layout&&devices[requestedView]&&!calibration?.active()) {
+   viewMode(requestedView,now);
+   requestedView=null;
+  }
  }
 
  function rangingHint(state) {
@@ -179,6 +200,7 @@
  function accept(message) {
   const now=performance.now();
   if (message.type==='localization') setLocalization(message,now);
+  else if (message.type==='localization_error') calibration?.error(message);
   else if (message.type==='ranging_web') ranging={...message,receivedAt:now};
   else if (message.type==='presence') presence={...message,receivedAt:now};
   else if (message.type==='status') primaryIp=message.csi_primary_env||message.csi_primary_ip||primaryIp;
@@ -213,6 +235,7 @@
   RadioDiagnostics.connect(wsBase+'/diagnostics',byId('download-log'),byId('log-status'));
  function connect(path,command) {
   const socket=new WebSocket(wsBase+path);
+  if (path==='/') localizationSocket=socket;
   let requestTimer, lastRequest=-Infinity, pending=false;
   function query() {
    lastRequest=performance.now();
@@ -247,6 +270,7 @@
    if (path==='/') {
     if (localization) localization.receivedAt=-Infinity;
     presence=null;
+    calibration?.disconnect();
    } else if (path==='/ranging') ranging=null;
    else {
     rawSamples.clear();
@@ -261,19 +285,29 @@
   return packet&&now-packet.receivedAt<1100?packet:null;
  }
 
- function posePoints(vector) {
+ const wristJoints=[4,7];
+ function wristVerified(wrists,index) {
+  return Array.isArray(wrists)&&wrists.includes(index);
+ }
+
+ function posePoints(vector, wrists) {
   if (!Array.isArray(vector)||vector.length<32) return null;
-  const values=vector.slice(0,32);
-  if (!values.every(v=>Number.isFinite(v)&&v>=-.35&&v<=1.35)) return null;
-  const points=Array.from({length:16},(_,i)=>[values[i*2],values[i*2+1]]);
-  return points.some(p=>Math.hypot(p[0]-points[0][0],p[1]-points[0][1])>.04)?points:null;
+  const points=Array.from({length:16},(_,i)=>{
+   if (wristJoints.includes(i)&&!wristVerified(wrists,i)) return null;
+   const point=vector.slice(i*2,i*2+2);
+   return point.every(v=>Number.isFinite(v)&&v>=-.35&&v<=1.35)?point:null;
+  });
+  const visible=points.filter(Boolean);
+  return visible.length>=2&&visible.some(p=>Math.hypot(p[0]-visible[0][0],p[1]-visible[0][1])>.04)?points:null;
  }
 
  function updateHud(result,cell,radio,joints) {
   const presenceLabel={moving:'Есть движение · зона неизвестна',still:'Присутствие · зона неизвестна'};
-  text('position',!connection?'Нет связи с сервером':!layout?'Нужен план помещения':cell?`Клетка ${cell.label}`:
+  const calibrating=calibration?.active();
+  for (const key of keys) byId(`${key}-view`).disabled=!layout||!devices[key]||calibrating;
+  text('position',!connection?'Нет связи с сервером':!layout?'Нужен план помещения':calibrating?'Идёт калибровка':cell?`Клетка ${cell.label}`:
    presenceLabel[result.state]??estimateLabels[result.state]??'Зона не определена');
-  text('position-source',cell?result.source:layout?result.detail??'':'');
+  text('position-source',cell?result.source:layout&&!calibrating?result.detail??'':'');
   if (view==='map') return;
   text('radio-title',`Сигнал ${RadioScene.names[view]}`);
   const ip=receivers[view];
@@ -283,14 +317,17 @@
   const values=radio?VisorGrain.values(radio.samples).amplitude:null;
   RadioScene.drawSpectrum(byId('spectrum'),values,RadioScene.colors[view]);
   byId('pose-panel').hidden=!joints;
-  if (joints) RadioScene.drawPose(byId('pose'),joints);
   const awaitingCalibration=radio?.hasSignal&&!radio.peer&&ip===primaryIp&&!radio.pose;
-  byId('pose-calibration').hidden=!awaitingCalibration;
+  const unverifiedWrists=joints&&wristJoints.some(i=>Number.isFinite(radio?.pose?.[i*2+1])&&
+   !wristVerified(radio.pose_wrists,i));
+  byId('pose-calibration').hidden=!awaitingCalibration&&!unverifiedWrists;
   let poseStatus='';
-  if (joints) poseStatus='Силуэт по экспериментальной 2D-оценке.';
+  if (joints) {
+   poseStatus=`Оценка по CSI · ${joints.filter(Boolean).length} точек`;
+   if (unverifiedWrists) poseStatus+=' · положение запястий не подтверждено';
+  }
   else if (radio?.hasSignal) {
-   if (!cell) poseStatus='Для размещения силуэта нужна оценка положения.';
-   else if (primaryIp&&ip!==primaryIp) poseStatus=`Для силуэта выберите основной ESP с IP ${primaryIp}.`;
+   if (primaryIp&&ip!==primaryIp) poseStatus=`Для оценки позы выберите основной ESP с IP ${primaryIp}.`;
    else if (awaitingCalibration) poseStatus='Нужна калибровка позы.';
    else poseStatus='Ожидание пригодной оценки позы.';
   }
@@ -316,16 +353,22 @@
 
  function frame(now) {
   const result=positionAt(now);
-  const cell=layout?.cellAt(result.point)??null;
+  const calibrating=calibration?.active();
+  const cell=calibrating?null:(layout?.cellAt(result.point)??null);
   const radio=currentRadio(now);
-  const joints=cell&&radio?.hasSignal?posePoints(radio.pose):null;
+  const target=!calibrating&&radio?.hasSignal?posePoints(radio.pose,radio.pose_wrists):null;
+  const poseSource=target?JSON.stringify([layoutId,view,radio.receiver,radio.source,radio.channel]):null;
+  const joints=poseSmoothing.update(target,poseSource,now);
+  const roomJoints=cell&&joints?.every(Boolean)?joints:null;
   trail.update(cell,now);
-  const drawn=scene.draw(now,devices,trail.visible(now),cell?result.point:null,radio,joints,gainControl.valueAsNumber);
+  const drawn=scene.draw(now,devices,calibrating?[]:trail.visible(now),cell?result.point:null,radio,roomJoints,
+   gainControl.valueAsNumber,calibration?.overlay());
   if (now-lastHud>=120) {
    updateHud(result,cell,radio,joints);
    reportDiagnostics(now,result,cell,radio,joints,drawn);
    lastHud=now;
   }
+  if (joints) RadioScene.drawPose(byId('pose'),joints);
   requestAnimationFrame(frame);
  }
 

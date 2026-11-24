@@ -22,6 +22,8 @@ from live_ab import AB_PLAN_FILE, ABPreview
 WINDOW = 1.0
 MIN_FRAMES = 10
 RAW_PACKET_LIMIT = 100_000
+GUIDED_DELAY = 10
+GUIDED_SECONDS = 20
 VISIT_POINTS = {"A": (1.0, 0.92), "B": (5.35, 0.72)}
 VISIT_DELAY = 30
 # Start and end in seconds of the capture, after the countdown.
@@ -315,6 +317,7 @@ class Localization:
         self.buffers = {}
         self.signal_quality = SignalQuality()
         self.recording = None
+        self.guided = None
         self.ab_preview = None
         self.model = None
         self.threshold = 1.0
@@ -644,6 +647,53 @@ class Localization:
                           "raw_packets": [], "raw_dropped": 0}
         self.message = "Отсчёт запущен. Займите точку или покиньте комнату для записи «Пусто»"
 
+    def start_guided(self, points, dataset_id, owner, now):
+        if self.recording:
+            raise ValueError("Дождитесь окончания текущей записи")
+        if self.room is None or dataset_id != self.dataset["id"]:
+            raise ValueError("План изменился. Выберите клетки заново")
+        if not isinstance(points, list) or not 2 <= len(points) <= 256:
+            raise ValueError("Выберите минимум две разные клетки")
+        targets = []
+        for point in points:
+            if (not isinstance(point, list) or len(point) != 2
+                    or not all(type(value) in (int, float) and 0 <= value <= limit
+                               for value, limit in zip(point, (self.room["width"], self.room["depth"])))):
+                raise ValueError("Некорректные координаты клетки")
+            target = tuple(round(value, 3) for value in point)
+            if not inside_room(self.room, target) or target in targets:
+                raise ValueError("Выберите разные клетки внутри комнаты")
+            targets.append(target)
+
+        lines = self.active_lines(now)
+        if len({line.split(" <- ")[0] for line in lines}) < 2 or self.feature(now, lines) is None:
+            raise ValueError("Для калибровки нужны пригодные кадры от обеих ESP")
+        if self.sessions:
+            self._create_dataset("Калибровка радиовизора", self.room, self.devices)
+        else:
+            self.lines = []
+        self.stop_ab_preview()
+        self.guided = {"id": uuid.uuid4().hex, "owner": owner, "steps": [None, None, *targets, *targets],
+                       "completed": 0, "state": "running", "message": ""}
+        self._start_guided_step(now)
+
+    def _start_guided_step(self, now):
+        point = self.guided["steps"][self.guided["completed"]]
+        try:
+            self.start(*(point or (None, None)), "train", GUIDED_DELAY, GUIDED_SECONDS, now)
+        except (ValueError, OSError) as error:
+            self._end_guided("failed", str(error))
+            raise
+        self.log_recording_start(self.recording)
+
+    def _end_guided(self, state, message):
+        self.guided.update(state=state, message=message, owner=None)
+
+    def stop_guided_on_disconnect(self, owner):
+        if self.guided and self.guided["owner"] is owner:
+            self.stop()
+            self.guided["message"] = "Связь с вкладкой потеряна. Завершённые записи сохранены"
+
     def start_visit(self, name, now):
         point = VISIT_POINTS.get(name)
         if not inside_room(self.room, point):
@@ -660,6 +710,15 @@ class Localization:
             self.log_recording_end(self.recording, "cancelled", "user_cancelled")
         self.recording = None
         self.message = "Запись отменена, незавершённые данные не сохранены"
+        if self.guided and self.guided["state"] == "running":
+            self._end_guided("cancelled", "Калибровка остановлена. Завершённые записи сохранены")
+
+    @staticmethod
+    def log_recording_start(rec):
+        target = "visit" if rec["role"] == "visit" else "empty" if rec["position"] is None else "point"
+        diagnostics.event("recording.started", model="sectors", capture=rec["id"], role=rec["role"],
+                          target=target, position=rec["visit"]["target"] if target == "visit" else rec["position"],
+                          delay_s=rec["delay"], duration_s=rec["duration"])
 
     @staticmethod
     def log_recording_end(rec, result, reason=None):
@@ -707,7 +766,11 @@ class Localization:
             except OSError as error:
                 item["raw_capture_error"] = str(error)
         self.sessions.append({**item, "X": X})
-        self._save()
+        try:
+            self._save()
+        except OSError:
+            self.sessions.pop()
+            raise
         self.log_recording_end(rec, "saved")
         self.message = f"Запись сохранена: {len(X)} окон; пропущено {rec['skipped']}"
         if item["raw_file"]:
@@ -835,7 +898,22 @@ class Localization:
                 except OSError as error:
                     self.log_recording_end(rec, "failed", "save_failed")
                     diagnostics.failure("recording.save_failed", error, model="sectors")
+                    if self.guided and self.guided["state"] == "running":
+                        self._end_guided("failed", "Не удалось сохранить запись")
                     raise
+                if self.guided and self.guided["state"] == "running":
+                    if not self.sessions or self.sessions[-1]["id"] != rec["id"]:
+                        self._end_guided("failed", self.message)
+                    else:
+                        self.guided["completed"] += 1
+                        if self.guided["completed"] == len(self.guided["steps"]):
+                            self._end_guided("done", "Калибровка завершена. Можно обучить модель")
+                        else:
+                            try:
+                                self._start_guided_step(now)
+                            except (ValueError, OSError):
+                                # The result is already available in the next status snapshot.
+                                pass
             elif now >= rec["start"]:
                 rec["quality_log"].append({"t": round(now - rec["start"], 3), "quality": quality})
                 if feature is None:
@@ -887,10 +965,14 @@ class Localization:
                 if step is not None:
                     progress["visit_instruction"] = step["instruction"]
                     progress["visit_step_left_s"] = math.ceil(step["end_s"] - elapsed)
+        guided = None
+        if self.guided:
+            guided = {key: self.guided[key] for key in ("id", "state", "completed", "message")}
+            guided["total"] = len(self.guided["steps"])
         return {"type": "localization", "room": self.room, "devices": self.devices, "lines": self.lines,
                 "dataset": self.dataset, "datasets": self.datasets(),
                 "quality": self.signal_quality.assess(self.lines, now),
-                "active_lines": self.active_lines(now), "recording": progress,
+                "active_lines": self.active_lines(now), "recording": progress, "guided_calibration": guided,
                 "sessions": [{k: v for k, v in s.items() if k != "X"} for s in self.sessions],
                 "model_ready": self.model is not None, "report": self.report, "can_train": self.training_ready(counts),
                 "ab_available": (self.directory / AB_PLAN_FILE).is_file(),

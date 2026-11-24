@@ -90,7 +90,7 @@ test('keeps the active cell lit, fades earlier cells and clears on a layout chan
  assert.equal(trail.visible(4200).length,0);
 });
 
-test('decodes raw signed I/Q and changes visual texture when the raw signal changes', () => {
+test('decodes raw signed I/Q and computes amplitudes', () => {
  const iq=VisorGrain.decode(Buffer.from([128,0,255,127]).toString('base64'));
  assert.deepEqual(Array.from(iq),[-128,0,-1,127]);
  const original=VisorGrain.values(iq);
@@ -101,15 +101,57 @@ test('decodes raw signed I/Q and changes visual texture when the raw signal chan
  assert.equal(VisorGrain.decode('AA=='),null);
 });
 
-test('gives weak nonzero I/Q a visible exposure and keeps zero data black', () => {
- const weak=VisorGrain.values(new Int8Array([0,0,0,0,1,0,-1,0,0,1,1,1])).amplitude;
- const before=Array.from(weak);
- const exposure=VisorGrain.displayExposure(weak);
- assert.ok(exposure>10);
- assert.ok(weak[2]*exposure>=.5);
- assert.equal(weak[0]*exposure,0);
- assert.deepEqual(Array.from(weak),before);
- assert.equal(VisorGrain.displayExposure(new Float32Array(64)),0);
+test('pose smoothing follows motion and resets on missing or changed input', () => {
+ const pose=RadioScene.poseSmoother();
+ const first=[[.2,.4],null], moved=[[.6,.4],null];
+ assert.equal(pose.update(first,'a',0),first);
+ const intermediate=pose.update(moved,'a',55);
+ assert.ok(intermediate[0][0]>.2&&intermediate[0][0]<.4);
+ assert.equal(intermediate[1],null);
+ assert.ok(pose.update(moved,'a',275)[0][0]>.48);
+ assert.equal(pose.update(moved,'b',290),moved);
+ assert.equal(pose.update(null,null,310),null);
+ assert.equal(pose.update(first,'b',320),first);
+});
+
+function iqPacket(sequence,receivedAt,samples,receiver='A') {
+ return {sequence,receivedAt,samples,receiver,source:'router',channel:6,key:`${receiver}:${sequence}`};
+}
+
+test('I/Q history ignores unused carriers and removes common gain and phase changes', () => {
+ const track=VisorGrain.history(), first=new Int8Array(128), rotated=new Int8Array(128);
+ for (let k=0;k<64;k++) {
+  const i=15+k%9,q=4+k%7;
+  first[2*k]=q;first[2*k+1]=i;
+  rotated[2*k]=i*2;rotated[2*k+1]=-q*2;
+ }
+ rotated[0]=127;rotated[2*30]=-128;
+ track.update(iqPacket(1,0,first));
+ track.update(iqPacket(2,100,rotated));
+ assert.equal(track.visible(100).length,0);
+
+ const shifted=rotated.slice();
+ shifted[6]-=32;shifted[7]+=28;
+ track.update(iqPacket(3,200,shifted));
+ assert.equal(track.visible(200).length,1);
+ const newest=track.visible(200)[0];
+ assert.equal(newest.heat,1);
+ assert.ok(newest.segments[0].shift>.03);
+ assert.equal(track.visible(1450)[0].heat,.5);
+ assert.equal(track.visible(2700).length,0);
+});
+
+test('I/Q trail does not connect frames across a radio line switch or outage', () => {
+ const track=VisorGrain.history(), first=new Int8Array(128).fill(10), shifted=first.slice();
+ shifted[2]=40;shifted[3]=-20;
+ track.update(iqPacket(10,0,first));
+ track.update(iqPacket(11,100,shifted));
+ assert.equal(track.visible(100).length,1);
+ track.update(iqPacket(11,120,shifted));
+ track.update(iqPacket(12,700,first));
+ assert.equal(track.visible(700).length,1);
+ track.update(iqPacket(14,800,shifted,'B'));
+ assert.equal(track.visible(800).length,0);
 });
 
 test('reports a cell and separate reasons when switching between the primary and secondary ESP', () => {
@@ -160,6 +202,23 @@ test('reports a cell and separate reasons when switching between the primary and
   [['esp1','no_pose'],['esp2','other_receiver']]);
  assert.deepEqual(sent.filter(row=>row.event==='signal').map(row=>[row.view,row.state]),
   [['esp1','ready'],['esp2','ready']]);
+
+ send('/ranging',{type:'ranging_web',dataset,model_ready:false});
+ const partial=Array.from({length:32},(_,index)=>index<8?.3+index*.04:null);
+ send('/visor',{type:'visor_csi',frames:[{receiver:a,iq,age_ms:0,sequence:2,pose:partial}]});
+ get('esp1-view').onclick();
+ frame(650);
+ assert.equal(get('pose-panel').hidden,false);
+ assert.match(get('pose-status').textContent,/4 точек/);
+
+ const upperBody=Array.from({length:32},(_,index)=>index<16?.3+index*.02:null);
+ send('/visor',{type:'visor_csi',frames:[{receiver:a,iq,age_ms:0,sequence:3,pose:upperBody}]});
+ frame(800);
+ assert.match(get('pose-status').textContent,/6 точек.*запястий не подтверждено/);
+
+ send('/visor',{type:'visor_csi',frames:[{receiver:a,iq,age_ms:0,sequence:4,pose:upperBody,pose_wrists:[4,7]}]});
+ frame(950);
+ assert.equal(get('pose-status').textContent,'Оценка по CSI · 8 точек');
 });
 
 test('journal distinguishes missing position, I/Q, secondary receiver, pose and drawn silhouette', () => {

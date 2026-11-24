@@ -20,12 +20,13 @@ class VisorCsiTests(unittest.TestCase):
         self.assertEqual(frame.iq[0], 0)
         feed = VisorCsi()
         first = feed.add("192.0.2.10", frame, wire, 7.0)
-        feed.set_pose(first, [.3, .6] * 16)
+        feed.set_pose(first, [.3, .6] * 16, (4,))
 
         snapshot = feed.snapshot(7.25)["frames"][0]
         self.assertEqual(base64.b64decode(snapshot["iq"]), samples)
         self.assertEqual((snapshot["sequence"], snapshot["age_ms"], snapshot["source"]), (10, 250, "1234"))
         self.assertEqual(snapshot["pose"], [.3, .6] * 16)
+        self.assertEqual(snapshot["pose_wrists"], [4])
         self.assertEqual(feed.snapshot(8.01)["frames"], [])
 
     def test_receiver_and_transmitter_samples_are_isolated_and_pose_does_not_carry_over(self):

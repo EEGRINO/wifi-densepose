@@ -28,6 +28,7 @@ from typing import Any
 import csi_packet
 from presence import PresenceDetector
 from localization import Localization
+from rf_shape import RFShape
 from ranging_web import RangingWeb
 from visor_csi import VisorCsi
 from diagnostics_socket import handle_socket as diagnostics_ws_handler
@@ -60,6 +61,7 @@ connected_clients: set = set()
 localization_clients: set = set()
 localization = Localization(os.path.join(_HERE, "localization_data"))
 ranging_web = RangingWeb(localization)
+rf_shape = RFShape(localization)
 visor_csi = VisorCsi()
 
 
@@ -239,6 +241,10 @@ class CameraPoseCalibrationManager:
     def __init__(self) -> None:
         self.rows_x: list[np.ndarray] = []
         self.rows_y: list[np.ndarray] = []
+        self.capture_scope = None
+        self.model_scope = None
+        self.visible = np.ones(16, dtype=bool)
+        self.validated_wrists: tuple[int, ...] = ()
         self._load_w()
 
     def _load_w(self) -> None:
@@ -246,12 +252,18 @@ class CameraPoseCalibrationManager:
         if not os.path.exists(CAMERA_POSE_W_PATH):
             return
         try:
-            d = np.load(CAMERA_POSE_W_PATH, allow_pickle=True)
-            W = d.get("W")
-            if W is not None and isinstance(W, np.ndarray) and W.shape == (64, 32):
+            with np.load(CAMERA_POSE_W_PATH, allow_pickle=False) as d:
+                W = d.get("W")
+                visible = np.asarray(d.get("visible", np.ones(16)), dtype=bool)
+                checked = d.get("validated_wrists", np.empty(0, dtype=int))
+                scope = tuple(d["scope"].tolist()) if "scope" in d and d["scope"].shape == (2,) else None
+                n = int(d["n_samples"]) if "n_samples" in d.files else 0
+            if W is not None and W.shape == (64, 32) and np.isfinite(W).all() and visible.shape == (16,):
                 _W_MATRIX = W.astype(np.float32)
                 _W_FROM_CAMERA = True
-                n = int(d["n_samples"]) if "n_samples" in d.files else 0
+                self.visible = visible
+                self.validated_wrists = tuple(joint for joint in (4, 7) if joint in checked.ravel())
+                self.model_scope = scope
                 print(f"✅ Загружена позовая матрица с камеры ({CAMERA_POSE_W_PATH}, {n} сэмплов при обучении)")
         except Exception as e:
             print(f"⚠️  camera_pose_W: {e}")
@@ -263,12 +275,14 @@ class CameraPoseCalibrationManager:
     def clear(self) -> None:
         self.rows_x.clear()
         self.rows_y.clear()
+        self.capture_scope = None
 
-    def add_batch(self, samples: list) -> tuple[int, str]:
+    def add_batch(self, samples: list, scope=None) -> tuple[int, str]:
         """samples: [{heights: [64], skeleton: [32]}, ...] — heights как в потоке (уже норм. или сырые)."""
-        global _W_MATRIX
         if not isinstance(samples, list):
             return 0, "samples не массив"
+        if self.n_samples and self.capture_scope != scope:
+            return 0, "Сменился план или основной ESP. Очистите учебные пары для новой калибровки."
         n_in = len(samples)
         ok = 0
         for s in samples:
@@ -283,53 +297,117 @@ class CameraPoseCalibrationManager:
                 continue
             mx = float(np.max(np.abs(ha))) + 1e-9
             hn = (ha / mx).astype(np.float32)
-            y = _json_vec_to_np(sk, 32)
-            if y is None:
+            try:
+                y = np.asarray(sk, dtype=np.float32).reshape(16, 2)
+            except (ValueError, TypeError):
                 continue
-            if not np.isfinite(hn).all() or not np.isfinite(y).all():
+            valid = np.isfinite(y).all(axis=1) & (y >= 0).all(axis=1) & (y <= 1).all(axis=1)
+            if not mx > 1e-8 or not valid[:2].all() or valid.sum() < 4:
                 continue
+            y[~valid] = np.nan
+            self.capture_scope = scope
             self.rows_x.append(hn)
-            self.rows_y.append(y.astype(np.float32))
+            self.rows_y.append(y.ravel())
             ok += 1
         return ok, f"В запросе {n_in} сэмплов, принято +{ok} (всего {self.n_samples})"
 
     def train(self) -> tuple[bool, str]:
         global _W_MATRIX, _W_FROM_CAMERA
-        n = len(self.rows_x)
+        scope = self.capture_scope
+        rows = list(zip(self.rows_x, self.rows_y))
+        n = len(rows)
         if n < 96:
             return False, f"Мало пар CSI–поза: {n} (нужно ≥ 96 для устойчивого МНК)"
         n_cap = 25000
         if n > n_cap:
             rng = np.random.default_rng(42)
-            idx = rng.choice(n, size=n_cap, replace=False)
-            Xs = [self.rows_x[i] for i in idx]
-            Ys = [self.rows_y[i] for i in idx]
-        else:
-            Xs = self.rows_x
-            Ys = self.rows_y
+            idx = np.sort(rng.choice(n, size=n_cap, replace=False))
+            rows = [rows[i] for i in idx]
+        Xs, Ys = zip(*rows)
         X = np.stack(Xs, axis=0)
         Y = np.stack(Ys, axis=0)
-        if not np.isfinite(X).all() or not np.isfinite(Y).all():
-            return False, "NaN/Inf в матрицах X/Y"
+        valid = np.isfinite(Y.reshape(-1, 16, 2)).all(axis=2)
+        visible = valid.sum(axis=0) >= 96
+        if not visible[:2].all() or visible.sum() < 4:
+            return False, "Мало пар с видимыми точками головы, плеч и рук."
+        weights = np.zeros((64, 32), dtype=np.float32)
+        ridge = .08 * np.eye(64)
         try:
-            W, *_ = np.linalg.lstsq(X, Y, rcond=1e-5)
+            for joint in np.flatnonzero(visible):
+                good = valid[:, joint]
+                columns = slice(2 * joint, 2 * joint + 2)
+                x = X[good]
+                weights[:, columns] = np.linalg.solve(x.T @ x + ridge, x.T @ Y[good, columns])
+            validated_wrists = tuple(wrist for elbow, wrist in ((3, 4), (6, 7))
+                                     if visible[elbow] and visible[wrist]
+                                     and self._validate_wrist(X, Y, elbow, wrist, ridge))
         except Exception as e:
             return False, f"lstsq: {e}"
-        if W.shape != (64, 32):
-            return False, "неверная форма W"
-        _W_MATRIX = W.astype(np.float32)
-        _W_FROM_CAMERA = True
         os.makedirs(os.path.dirname(CAMERA_POSE_W_PATH), exist_ok=True)
-        np.savez(CAMERA_POSE_W_PATH, W=_W_MATRIX, n_samples=n)
-        err = float(np.mean((X @ _W_MATRIX - Y) ** 2))
-        msg = f"Обучено по {n} парам, MSE≈{err:.5f} — матрица сохранена"
+        fields = {"scope": scope} if scope else {}
+        temporary = CAMERA_POSE_W_PATH + ".tmp"
+        try:
+            with open(temporary, "wb") as file:
+                np.savez(file, W=weights, n_samples=n, visible=visible,
+                         validated_wrists=np.asarray(validated_wrists, dtype=np.int8), **fields)
+            os.replace(temporary, CAMERA_POSE_W_PATH)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        self.model_scope = scope
+        self.visible = visible
+        self.validated_wrists = ()
+        _W_MATRIX = weights
+        _W_FROM_CAMERA = True
+        self.validated_wrists = validated_wrists
+        msg = (f"Обучено по {n} парам, доступно точек позы: {int(visible.sum())}. "
+               f"Проверено запястий для радиовизора: {len(validated_wrists)} из 2.")
         print(f"✅ {msg}")
         try:
-            limb_cal.recompute_pose_prototypes()
-            limb_cal.save()
+            if visible.all():
+                limb_cal.recompute_pose_prototypes()
+                limb_cal.save()
         except Exception:
             pass
         return True, msg
+
+    @staticmethod
+    def _validate_wrist(X, Y, elbow, wrist, ridge) -> bool:
+        columns = (2 * elbow + 1, 2 * wrist + 1)
+        positions = Y[:, columns]
+        delta = positions[:, 1] - positions[:, 0]
+        # Keep one sustained example of each orientation out of the fit,
+        # along with its neighboring frames to reduce temporal leakage.
+        held = np.zeros(len(X), dtype=bool)
+        blocks = []
+        for direction in (-1, 1):
+            matching = direction * delta >= .04
+            changes = np.flatnonzero(np.diff(matching, prepend=False, append=False))
+            runs = [(start, stop) for start, stop in zip(changes[::2], changes[1::2]) if stop - start >= 24]
+            if len(runs) < 2:
+                return False
+            start, stop = runs[-1]
+            blocks.append((slice(start, stop), direction))
+            held[max(0, start - 12):stop + 12] = True
+        if any(np.count_nonzero((direction * delta >= .04) & ~held) < 24 for direction in (-1, 1)):
+            return False
+        good = np.isfinite(delta) & ~held
+        x = X[good]
+        weights = np.linalg.solve(x.T @ x + ridge, x.T @ positions[good])
+        for block, direction in blocks:
+            predicted = X[block] @ weights
+            diff = predicted[:, 1] - predicted[:, 0]
+            if np.mean(direction * diff >= .02) < .85 or np.mean(np.abs(diff - delta[block])) > .10:
+                return False
+        return True
+
+    def estimate(self, norm, source_ip):
+        if _W_MATRIX is None or not _W_FROM_CAMERA or not np.any(norm):
+            return []
+        if self.model_scope and self.model_scope != (localization.dataset["id"], source_ip):
+            return []
+        points = np.dot(norm, _W_MATRIX).reshape(16, 2)
+        return [float(value) if visible else None for joint, visible in zip(points, self.visible) for value in joint]
 
     def revert_to_bundled_model(self) -> bool:
         global _W_MATRIX, _W_FROM_CAMERA
@@ -353,6 +431,9 @@ class CameraPoseCalibrationManager:
 
 
 camera_pose_cal = CameraPoseCalibrationManager()
+camera_pose_training = asyncio.Lock()
+if not CSI_PRIMARY_IP and camera_pose_cal.model_scope and camera_pose_cal.model_scope[0] == localization.dataset["id"]:
+    _sticky_primary_udp_ip = camera_pose_cal.model_scope[1]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1228,7 +1309,9 @@ def process_csi(amps, rssi, ts):
     inp[: min(64, len(a))] = a[:64]
     mx   = float(np.max(np.abs(inp))) + 1e-6
     norm = inp / mx
-    skel = np.dot(norm, _W_MATRIX).tolist() if _W_MATRIX is not None and _W_FROM_CAMERA else []
+    skel = camera_pose_cal.estimate(norm, CSI_PRIMARY_IP or _sticky_primary_udp_ip)
+    if None in skel:
+        skel = []
     if skel and len(skel) >= 32:
         probs, _src = limb_cal.limb_scores_for_frame(norm.tolist())
         if probs is not None:
@@ -1259,10 +1342,13 @@ def parse_ruview_packet(data: bytes, *, source_ip: str | None = None) -> dict | 
         if source_ip:
             _store_csi_frame(source_ip, heights)
 
+        camera_pose = []
         skeleton = []
         if _W_MATRIX is not None and _W_FROM_CAMERA:
             try:
-                skeleton = np.dot(norm, _W_MATRIX).tolist()
+                camera_pose = camera_pose_cal.estimate(norm, source_ip)
+                if None not in camera_pose:
+                    skeleton = camera_pose
             except Exception as e:
                 if not hasattr(parse_ruview_packet, "_err"):
                     print(f"❌ Ошибка инференса позы: {e}")
@@ -1377,6 +1463,7 @@ def parse_ruview_packet(data: bytes, *, source_ip: str | None = None) -> dict | 
             "rssi":               rssi_raw,
             "heights":            heights,
             "skeleton":           skeleton,
+            "camera_pose":        camera_pose if apply_effects else [],
             "ts":                 ts_val,
             "motion":             min(motion_energy, 1.0),
             "activity":           activity,
@@ -1450,6 +1537,8 @@ async def handle_cmd(cmd: dict, ws):
         try:
             if action != "localization_status" and ranging_web.recording:
                 raise ValueError("Идёт запись на странице калибровки расстояний.")
+            if action != "localization_status" and rf_shape.recording:
+                raise ValueError("Идёт запись формы по CSI.")
             if action == "localization_dataset_new":
                 localization.new_dataset()
             elif action == "localization_dataset_open":
@@ -1473,6 +1562,8 @@ async def handle_cmd(cmd: dict, ws):
             elif action == "localization_record":
                 localization.start(cmd.get("x"), cmd.get("z"), cmd.get("role", "train"),
                                    cmd.get("delay", 15), cmd.get("seconds", 20), time.monotonic())
+            elif action == "localization_guided_start":
+                localization.start_guided(cmd.get("points"), cmd.get("dataset_id"), ws, time.monotonic())
             elif action in ("localization_visit_a", "localization_visit_b"):
                 localization.start_visit(action[-1].upper(), time.monotonic())
             elif action == "localization_cancel":
@@ -1491,18 +1582,14 @@ async def handle_cmd(cmd: dict, ws):
             elif action != "localization_status":
                 raise ValueError("Неизвестная команда локализации")
             if action in ("localization_record", "localization_visit_a", "localization_visit_b"):
-                rec = localization.recording
-                diagnostics.event("recording.started", model="sectors", capture=rec["id"], role=rec["role"],
-                                  target="visit" if rec["role"] == "visit" else "empty" if rec["position"] is None else "point",
-                                  position=rec["visit"]["target"] if rec["role"] == "visit" else rec["position"],
-                                  delay_s=rec["delay"], duration_s=rec["duration"])
+                localization.log_recording_start(localization.recording)
             status = add_ranging_summary(localization.status(time.monotonic()))
             await ws.send(_udp_payload_to_json({**status, "action": action}))
         except (ValueError, TypeError, OSError, ImportError) as error:
             if action == "localization_train":
                 diagnostics.failure("training.finished", error, model="sectors", result="failed",
                                     reason=diagnostic_reason(error))
-            elif action in ("localization_record", "localization_visit_a", "localization_visit_b"):
+            elif action in ("localization_record", "localization_visit_a", "localization_visit_b", "localization_guided_start"):
                 diagnostics.failure("recording.rejected", error, model="sectors",
                                     reason=diagnostic_reason(error))
             await ws.send(json.dumps({"type": "localization_error", "message": str(error), "action": action}))
@@ -1640,7 +1727,11 @@ async def handle_cmd(cmd: dict, ws):
         n_cam = 0
         msg_cam = ""
         if not skip_camera_pose:
-            n_cam, msg_cam = camera_pose_cal.add_batch(samples)
+            receiver = CSI_PRIMARY_IP or _sticky_primary_udp_ip
+            if receiver:
+                n_cam, msg_cam = camera_pose_cal.add_batch(samples, (localization.dataset["id"], receiver))
+            else:
+                msg_cam = "Ожидается CSI от основной ESP."
         else:
             msg_cam = "пары CSI+поза для МНК не добавлялись (режим «только зона»)"
 
@@ -1672,7 +1763,8 @@ async def handle_cmd(cmd: dict, ws):
     elif action == "camera_pose_train":
         diagnostics.event("training.started", model="pose", pairs=camera_pose_cal.n_samples)
         try:
-            ok, msg = await asyncio.to_thread(camera_pose_cal.train)
+            async with camera_pose_training:
+                ok, msg = await asyncio.to_thread(camera_pose_cal.train)
         except Exception as e:
             traceback.print_exc()
             ok, msg = False, str(e)
@@ -1798,7 +1890,7 @@ async def _udp_loop(sock: socket.socket, port: int, loop: asyncio.AbstractEventL
                 if not parsed:
                     continue
                 if parsed["csi_primary"]:
-                    visor_csi.set_pose(visor_key, parsed["skeleton"])
+                    visor_csi.set_pose(visor_key, parsed["camera_pose"], camera_pose_cal.validated_wrists)
                 parsed["csi_received_ms"] = t_wall * 1000
                 if not connected_clients:
                     if now - _last_log_no_ws >= 15.0:
@@ -1892,6 +1984,8 @@ async def ranging_ws_handler(websocket):
                 if operation:
                     diagnostics.event(f"{operation}.started", model="ranging")
                 try:
+                    if action == "ranging_web_record" and rf_shape.recording:
+                        raise ValueError("Идёт запись формы по CSI.")
                     response = ranging_web.handle(command, time.monotonic())
                 except (ValueError, TypeError, KeyError, OSError) as error:
                     if operation:
@@ -1914,6 +2008,44 @@ async def ranging_ws_handler(websocket):
         pass
 
 
+async def rf_shape_ws_handler(websocket):
+    try:
+        async for wire in websocket:
+            try:
+                command = json.loads(wire)
+            except (ValueError, UnicodeError):
+                continue
+            if not isinstance(command, dict):
+                continue
+            now = time.monotonic()
+            rf_shape.sync()
+            action = command.get("cmd")
+            try:
+                if action == "rf_shape_record":
+                    if localization.recording or ranging_web.recording:
+                        raise ValueError("Дождитесь окончания записи калибровки")
+                    rf_shape.start(command.get("cells"), command.get("role"), websocket, now)
+                elif action == "rf_shape_cancel":
+                    rf_shape.cancel(websocket)
+                elif action == "rf_shape_delete":
+                    rf_shape.delete_capture(command.get("id"))
+                elif action == "rf_shape_import_background":
+                    rf_shape.import_background()
+                elif action == "rf_shape_train":
+                    rf_shape.train()
+                elif action != "rf_shape_status":
+                    continue
+                response = rf_shape.status(now)
+                response["can_cancel"] = rf_shape.recording is not None and rf_shape.recording["owner"] is websocket
+            except (ValueError, OSError, np.linalg.LinAlgError) as error:
+                response = {"type": "rf_shape_error", "message": str(error)}
+            await websocket.send(_udp_payload_to_json({**response, "action": action}))
+    except websockets.exceptions.ConnectionClosed:
+        pass
+    finally:
+        rf_shape.cancel(websocket)
+
+
 async def ws_handler(websocket):
     request = getattr(websocket, "request", None)
     path = request.path if request is not None else getattr(websocket, "path", "")
@@ -1925,6 +2057,9 @@ async def ws_handler(websocket):
         return
     if path == "/ranging":
         await ranging_ws_handler(websocket)
+        return
+    if path == "/rf-shape":
+        await rf_shape_ws_handler(websocket)
         return
     if path == "/visor":
         try:
@@ -1978,6 +2113,7 @@ async def ws_handler(websocket):
     finally:
         connected_clients.discard(websocket)
         localization_clients.discard(websocket)
+        localization.stop_guided_on_disconnect(websocket)
 
 
 def broadcast_live(clients, message):
@@ -2048,6 +2184,7 @@ async def localization_loop():
         now = time.monotonic()
         try:
             status = localization.tick(now)
+            rf_shape.tick(now)
             if status and localization_clients:
                 message = _udp_payload_to_json(add_ranging_summary(status))
                 broadcast_live(localization_clients, message)

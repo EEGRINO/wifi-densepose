@@ -30,6 +30,46 @@ class LocalizationTests(unittest.TestCase):
             for i in range(20):
                 self.loc.add(receiver, self.frame(), now - .95 + i * .05)
 
+    def test_guided_calibration_records_background_and_two_passes_in_separate_dataset(self):
+        self.training_sessions()
+        self.feed(1)
+        owner = object()
+        self.loc.start_guided([[1, 1], [4, 1]], "original", owner, 1)
+        self.assertNotEqual(self.loc.dataset["id"], "original")
+        expected = [None, None, [1, 1], [4, 1], [1, 1], [4, 1]]
+        for index, point in enumerate(expected):
+            start = 1 + index * 30
+            step = self.loc.status(start)
+            self.assertEqual(step["guided_calibration"]["completed"], index)
+            self.assertEqual(step["recording"]["position"], point)
+            self.assertEqual(step["recording"]["left_s"], 10)
+            for now in range(start + 1, start + 31):
+                self.feed(now)
+                self.loc.tick(now)
+        done = self.loc.status(181)
+        self.assertIsNone(done["recording"])
+        self.assertEqual(done["guided_calibration"]["state"], "done")
+        self.assertTrue(done["can_train"])
+        self.assertEqual([session["position"] for session in done["sessions"]], expected)
+        self.loc.open_dataset("original")
+        self.assertEqual(len(self.loc.sessions), 6)
+
+    def test_guided_calibration_stops_after_failed_window_or_owner_disconnect(self):
+        owner = object()
+        self.feed(1)
+        self.loc.start_guided([[1, 1], [4, 1]], "original", owner, 1)
+        self.loc.tick(31)
+        self.assertEqual(self.loc.status(31)["guided_calibration"]["state"], "failed")
+        self.assertIsNone(self.loc.recording)
+        self.feed(32)
+        self.loc.start_guided([[1, 1], [4, 1]], "original", owner, 32)
+        self.loc.stop_guided_on_disconnect(object())
+        self.assertIsNotNone(self.loc.recording)
+        self.loc.stop_guided_on_disconnect(owner)
+        self.assertEqual(self.loc.status(32)["guided_calibration"]["state"], "cancelled")
+        self.assertIsNone(self.loc.recording)
+        self.assertEqual(self.loc.sessions, [])
+
     def training_sessions(self):
         self.loc.lines = ["one", "two"]
         rng = np.random.default_rng(4)

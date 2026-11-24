@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>Форма по CSI · Радиовизор</title>
+ <link rel="stylesheet" href="radioview.css?v=6">
+ <script defer src="rf_shape.js?v=2"></script>
+</head>
+<body>
+<main>
+ <header class="page-head">
+  <div><a href="radioview.html">← Радиовизор</a><h1>Форма по CSI</h1></div>
+ </header>
+ <div class="shape-workspace">
+  <section class="panel readout shape-calibration">
+   <h2>Разметка формы</h2>
+   <p>Отметьте на полу место для испытуемого и направление, в котором он стоит. Во всех записях используйте одно место и одно направление.</p>
+   <p>На сетке 2 × 2 м отметьте клетки, занятые телом при взгляде спереди. Нижний ряд соответствует полу. Для пустой комнаты оставьте сетку пустой.</p>
+   <div id="rf-shape-grid" class="shape-grid" role="group" aria-label="Клетки вертикальной разметки"></div>
+   <button type="button" id="rf-shape-clear">Очистить сетку</button>
+   <label for="rf-shape-role">Назначение записи</label>
+   <select id="rf-shape-role"><option value="train">Обучение</option><option value="test">Независимая проверка</option></select>
+   <div class="shape-actions">
+    <button type="button" id="rf-shape-record" class="calibration-primary" disabled>Записать CSI</button>
+    <button type="button" id="rf-shape-cancel" disabled>Отменить запись</button>
+   </div>
+   <output id="rf-shape-timer" class="shape-timer"></output>
+   <p id="rf-shape-notice" role="status"></p>
+  </section>
+  <div>
+   <section class="panel readout shape-calibration">
+    <h2>Записи и проверка</h2>
+    <p>Для обучения запишите минимум три разные формы и два раза пустую комнату. Для проверки снимите две новые формы и ещё одну пустую комнату.</p>
+    <p id="rf-shape-dataset" class="muted"></p>
+    <ul id="rf-shape-captures" class="shape-captures"></ul>
+    <button type="button" id="rf-shape-import" disabled>Взять фон из калибровки клеток</button>
+    <button type="button" id="rf-shape-train" class="calibration-primary" disabled>Обучить и проверить</button>
+    <p id="rf-shape-report" class="muted"></p>
+   </section>
+   <section class="panel readout shape-preview">
+    <h2>Форма по живому CSI</h2>
+    <canvas id="rf-shape-output" width="160" height="200" aria-label="Оценка занятых клеток в вертикальной плоскости" hidden></canvas>
+    <p id="rf-shape-status" class="muted" role="status">Подключение…</p>
+   </section>
+  </div>
+ </div>
+</main>
+</body>
+</html>

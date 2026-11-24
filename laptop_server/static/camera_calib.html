@@ -68,18 +68,12 @@
     ul.hint { margin: 8px 0 0; padding-left: 1.2em; font-size: 0.88rem; color: var(--muted); line-height: 1.45; }
     a { color: var(--line); }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js" crossorigin="anonymous"></script>
 </head>
 <body>
-  <h1>Калибровка CSI → поза (камера + зарядка)</h1>
+  <h1>Калибровка позы по камере</h1>
   <p style="color:var(--muted);max-width:720px;font-size:0.9rem;margin:0 0 16px;text-align:center;">
-    Включите камеру: поверх видео рисуется скелет MediaPipe — убедитесь, что он совпадает с вами.
-    Одновременно должен идти поток CSI с ESP (тот же WebSocket, что у карты).
-    Открывайте страницу как <code>http://127.0.0.1:8000/…</code> или <code>localhost</code>, а не <code>0.0.0.0</code> — иначе камера и сокет к порту 8765 часто не работают.
-    Выберите <strong>зону конечности</strong> ниже — тогда при отправке буфера CSI попадёт <em>только</em> в эту зону (модель зон на сервере). Двигаете в кадре только выбранной частью тела (как в гайде по зонам).
-    <a href="map3d.html">← Карта 3D</a>
+    Сядьте так, чтобы в кадре были лицо, плечи и руки. После начала записи несколько раз смените положение рук и корпуса, оставаясь на стуле. После обучения выключите камеру и откройте радиовизор на основной ESP.
+    <a href="radioview.html">← Радиовизор</a>
     · <a href="calibration_guide.html">Гайд по зонам</a>
   </p>
 
@@ -111,6 +105,8 @@
         <button type="button" class="primary" id="btn-rec" disabled>Запись пар CSI+поза</button>
         <button type="button" id="btn-rec-stop" disabled>Стоп</button>
       </div>
+      <label class="stat"><input type="checkbox" id="cb-arms" /> Записывать только кадры с обоими локтями и запястьями</label>
+      <div class="stat" id="arm-hint" hidden>Для проверки запястий несколько раз чередуйте положения выше и ниже локтей. Задерживайтесь в каждом положении на 5 секунд.</div>
       <div class="stat">В буфере: <strong id="n-pairs">0</strong> пар · МНК позы на сервере: <strong id="n-srv">0</strong> · CSI по зонам: <strong id="n-limb-srv">—</strong></div>
       <div class="stat" id="pair-gate" style="font-size:0.82rem;color:var(--warn);">Пары: ждём CSI и позу…</div>
       <div class="stat" id="train-hint" style="font-size:0.8rem;">МНК: нужно ≥96 пар <em>в nn_pipeline</em> (нажмите «Отправить буфер»).</div>
@@ -139,6 +135,7 @@
         <canvas id="overlay"></canvas>
       </div>
       <div class="stat" id="pose-status">Поза: —</div>
+      <div class="stat" id="arm-status" hidden></div>
       <div class="stat" id="csi-status">CSI: ожидание WebSocket…</div>
       <div class="err" id="err-box" style="display:none;"></div>
     </div>
@@ -163,6 +160,9 @@
   const canvas = document.getElementById('overlay');
   const ctx = canvas.getContext('2d');
   const poseStatus = document.getElementById('pose-status');
+  const armStatus = document.getElementById('arm-status');
+  const armHint = document.getElementById('arm-hint');
+  const armsOnly = document.getElementById('cb-arms');
   const csiStatus = document.getElementById('csi-status');
   const errBox = document.getElementById('err-box');
   const msgBox = document.getElementById('msg-box');
@@ -172,6 +172,7 @@
   let lastHeights = null;
   let lastCsiTs = 0;
   let videoFrameAt = null;
+  let framePair = null;
   let lastPairGap = null;
   const poseSync = createCsiPoseSync();
   let ws = null;
@@ -185,6 +186,7 @@
   /** Свежий CSI (мс) — иначе пара не пишется (как в map3d: viz.heights или heights) */
   const CSI_FRESH_MS = 900;
   let lastPoseOk = false;
+  let lastArmsVisible = false;
   const _csiSrc = { last: null };
 
   /** Как в nn_pipeline: norm = h / max|h| (64) — запасной путь из raw.amps шлюза */
@@ -264,15 +266,6 @@
     msgBox.textContent = t || '';
   }
 
-  function finite32(arr) {
-    const a = Array.from(arr, (x) => {
-      const n = typeof x === 'number' ? x : parseFloat(x);
-      return Number.isFinite(n) ? n : 0;
-    });
-    while (a.length < 32) a.push(0);
-    return a.slice(0, 32);
-  }
-
   function finite64(arr) {
     const a = Array.from(arr, (x) => {
       const n = typeof x === 'number' ? x : parseFloat(x);
@@ -284,44 +277,29 @@
 
   function landmarksToSk32(lm) {
     if (!lm || lm.length < 29) return null;
-    const vis = (i) => (lm[i].visibility != null ? lm[i].visibility : 1);
-    if (vis(0) < MIN_VIS || vis(11) < MIN_VIS || vis(12) < MIN_VIS) return null;
-    const mid = (a, b) => ({ x: (lm[a].x + lm[b].x) / 2, y: (lm[a].y + lm[b].y) / 2 });
-    const neck = mid(11, 12);
-    const pelvis = mid(23, 24);
-    const spine = { x: (neck.x + pelvis.x) / 2, y: (neck.y + pelvis.y) / 2 };
-    const pts = [
-      lm[0], neck, lm[12], lm[14], lm[16], lm[11], lm[13], lm[15],
-      lm[24], lm[26], lm[28], lm[23], lm[25], lm[27], spine, pelvis
-    ];
-    const out = new Float32Array(32);
-    for (let i = 0; i < 16; i++) {
-      out[i * 2] = pts[i].x;
-      out[i * 2 + 1] = pts[i].y;
-    }
-    return out;
+    const point = (i) => {
+      const p = lm[i];
+      return p && (p.visibility ?? 1) >= MIN_VIS && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1 ? p : null;
+    };
+    const mid = (a, b) => a && b ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } : null;
+    const head = point(0), left = point(11), right = point(12);
+    if (!head || !left || !right) return null;
+    const neck = mid(left, right);
+    const pelvis = mid(point(23), point(24));
+    return [head, neck, right, point(14), point(16), left, point(13), point(15),
+      point(24), point(26), point(28), point(23), point(25), point(27), mid(neck, pelvis), pelvis
+    ].flatMap(p => p ? [p.x, p.y] : [null, null]);
   }
 
-  function drawSkeleton16(lm, w, h) {
-    const pts = [];
-    const px = (pt) => ({ x: pt.x * w, y: pt.y * h });
-    const mid = (a, b) => ({ x: (lm[a].x + lm[b].x) / 2, y: (lm[a].y + lm[b].y) / 2 });
-    const neck = mid(11, 12);
-    const pelvis = mid(23, 24);
-    const spine = { x: (neck.x + pelvis.x) / 2, y: (neck.y + pelvis.y) / 2 };
-    const p = [
-      lm[0], neck, lm[12], lm[14], lm[16], lm[11], lm[13], lm[15],
-      lm[24], lm[26], lm[28], lm[23], lm[25], lm[27], spine, pelvis
-    ];
-    for (let i = 0; i < 16; i++) {
-      const o = px(p[i]);
-      pts.push(o);
-    }
+  function drawSkeleton16(pose, w, h) {
+    const pts = Array.from({length:16}, (_, i) => pose[2 * i] === null ? null :
+      { x: pose[2 * i] * w, y: pose[2 * i + 1] * h });
     ctx.strokeStyle = 'rgba(0, 255, 200, 0.95)';
     ctx.lineWidth = 3;
     ctx.lineCap = 'round';
     for (const [a, b] of BONES16) {
       const A = pts[a], B = pts[b];
+      if (!A || !B) continue;
       ctx.beginPath();
       ctx.moveTo(A.x, A.y);
       ctx.lineTo(B.x, B.y);
@@ -329,9 +307,23 @@
     }
     ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
     for (const q of pts) {
+      if (!q) continue;
       ctx.beginPath();
       ctx.arc(q.x, q.y, 5, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+
+  function updateArmStatus(sk) {
+    const right = Number.isFinite(sk?.[7]) && Number.isFinite(sk?.[9]);
+    const left = Number.isFinite(sk?.[13]) && Number.isFinite(sk?.[15]);
+    lastArmsVisible = right && left;
+    armStatus.hidden = !armsOnly.checked;
+    armHint.hidden = !armsOnly.checked;
+    if (armsOnly.checked) {
+      const describe = (visible, elbow, wrist) => !visible ? 'ждём локоть и запястье'
+        : sk[wrist] >= sk[elbow] ? 'запястье ниже локтя или на его уровне' : 'запястье выше локтя';
+      armStatus.textContent = `Правая рука: ${describe(right, 7, 9)} · Левая рука: ${describe(left, 13, 15)}`;
     }
   }
 
@@ -359,6 +351,11 @@
       el.style.color = 'var(--warn)';
       return;
     }
+    if (armsOnly.checked && !lastArmsVisible) {
+      el.textContent = 'Пары: ждём, пока камера увидит оба локтя и оба запястья.';
+      el.style.color = 'var(--warn)';
+      return;
+    }
     el.textContent = lastPairGap === null ? 'Пары: ожидается CSI в пределах 80 мс от кадра камеры.'
       : 'Пары: запись идёт · расхождение ' + Math.round(lastPairGap) + ' мс.';
     el.style.color = lastPairGap === null ? 'var(--warn)' : 'var(--accent)';
@@ -371,27 +368,28 @@
     if (!results.poseLandmarks) {
       lastPoseOk = false;
       lastPairGap = null;
+      updateArmStatus(null);
       poseStatus.textContent = 'Поза: не найдена (встаньте в кадр)';
       updatePairGate();
       return;
     }
     const lm = results.poseLandmarks;
-    drawSkeleton16(lm, w, h);
-
     const sk = landmarksToSk32(lm);
+    if (sk) drawSkeleton16(sk, w, h);
     lastPoseOk = !!sk;
-    const paired = sk && recording ? poseSync.pair(videoFrameAt) : null;
+    updateArmStatus(sk);
+    const paired = sk && recording && (!armsOnly.checked || lastArmsVisible) ? framePair : null;
     lastPairGap = paired?.gapMs ?? null;
     if (paired) {
       localBuffer.push({
         heights: finite64(paired.heights),
-        skeleton: finite32(sk)
+        skeleton: sk
       });
       document.getElementById('n-pairs').textContent = String(localBuffer.length);
       if (localBuffer.length >= 150) flushBuffer(false);
     }
     poseStatus.textContent = sk
-      ? 'Поза: OK (16 суставов), запись ' + (recording ? 'идёт' : 'выкл.')
+      ? 'Видимых точек: ' + sk.filter(Number.isFinite).length / 2 + ' из 16 · запись ' + (recording ? 'идёт' : 'выкл.')
       : 'Поза: низкая видимость ключевых точек';
     updatePairGate();
   }
@@ -404,12 +402,32 @@
     canvas.height = h;
   }
 
+  function loadScript(url) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = url;
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.append(script);
+    });
+  }
+
+  async function loadMediaPipe(name, version) {
+    const local = 'vendor/mediapipe/' + name + '/';
+    const remote = 'https://cdn.jsdelivr.net/npm/@mediapipe/' + name + '@' + version + '/';
+    try {
+      await loadScript(local + name + '.js');
+      return local;
+    } catch (_) {
+      await loadScript(remote + name + '.js');
+      return remote;
+    }
+  }
+
+  let mediaPipe = null;
+
   document.getElementById('btn-cam').onclick = async () => {
     showErr('');
-    if (!window.Pose || !window.Camera) {
-      showErr('Библиотеки MediaPipe не загрузились. Для запуска камеры нужен доступ к CDN.');
-      return;
-    }
     const start = document.getElementById('btn-cam');
     start.disabled = true;
     try {
@@ -417,11 +435,15 @@
         throw new Error('Откройте страницу по http://127.0.0.1:8000, чтобы браузер разрешил камеру.');
       }
 
-      pose = new Pose({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${file}`
+      mediaPipe ??= Promise.all([loadMediaPipe('pose', '0.5.1675469404'),
+        loadMediaPipe('camera_utils', '0.3.1675466862')]).catch(() => {
+        mediaPipe = null;
+        throw new Error('Не удалось загрузить MediaPipe');
       });
+      const [poseDirectory] = await mediaPipe;
+      pose = new Pose({ locateFile: (file) => poseDirectory + file });
       pose.setOptions({
-        modelComplexity: 1,
+        modelComplexity: 0,
         smoothLandmarks: true,
         minDetectionConfidence: 0.5,
         minTrackingConfidence: 0.5
@@ -430,8 +452,18 @@
 
       camera = new Camera(vid, {
         onFrame: async () => {
-          videoFrameAt = Date.now();
-          await pose.send({ image: vid });
+          const capturedAt = Date.now();
+          if (!pose || (videoFrameAt !== null && capturedAt - videoFrameAt < 75)) return;
+          videoFrameAt = capturedAt;
+          framePair = recording ? poseSync.pair(capturedAt) : null;
+          try {
+            await pose.send({ image: vid });
+          } catch (error) {
+            if (pose) {
+              stopCamera();
+              showErr('Распознавание позы: ' + error.message);
+            }
+          }
         },
         width: 640,
         height: 480
@@ -467,15 +499,21 @@
     document.getElementById('btn-rec').disabled = true;
     document.getElementById('btn-rec-stop').disabled = true;
     recording = false;
+    armsOnly.disabled = false;
     videoFrameAt = null;
+    framePair = null;
     lastPairGap = null;
+    updateArmStatus(null);
   }
   document.getElementById('btn-cam-off').onclick = stopCamera;
+  armsOnly.onchange = () => updateArmStatus(null);
 
   document.getElementById('btn-rec').onclick = () => {
     poseSync.reset();
+    framePair = null;
     lastPairGap = null;
     recording = true;
+    armsOnly.disabled = true;
     document.getElementById('btn-rec').disabled = true;
     document.getElementById('btn-rec-stop').disabled = false;
     {
@@ -483,12 +521,13 @@
       const z = lz && lz.value;
       showMsg(z
         ? 'Запись: двигайте в кадре в основном выбранную зону («' + (lz.options[lz.selectedIndex] && lz.options[lz.selectedIndex].text) + '»).'
-        : 'Идёт запись: двигайтесь как при зарядке; при необходимости выберите зону и отправьте буфер.');
+        : 'Запись идёт. Смените положение рук и корпуса несколько раз.');
     }
     updatePairGate();
   };
   document.getElementById('btn-rec-stop').onclick = () => {
     recording = false;
+    armsOnly.disabled = false;
     document.getElementById('btn-rec').disabled = false;
     document.getElementById('btn-rec-stop').disabled = true;
     showMsg('Запись остановлена. Отправьте буфер или обучите.');

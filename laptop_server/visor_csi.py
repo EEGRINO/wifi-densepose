@@ -24,9 +24,10 @@ class VisorCsi:
             self.frames.popitem(last=False)
         return key
 
-    def set_pose(self, key, points):
+    def set_pose(self, key, points, wrists=()):
         if key is not None and points and key in self.frames:
             self.frames[key]["pose"] = points
+            self.frames[key]["pose_wrists"] = list(wrists)
 
     def snapshot(self, now):
         packets = []

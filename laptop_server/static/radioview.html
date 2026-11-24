@@ -4,12 +4,14 @@
  <meta charset="utf-8">
  <meta name="viewport" content="width=device-width, initial-scale=1">
  <title>Радиовизор · WiFi DensePose</title>
- <link rel="stylesheet" href="radioview.css?v=3">
+ <link rel="stylesheet" href="radioview.css?v=7">
  <script defer src="room_editor.js"></script>
- <script defer src="visor_grain.js?v=3"></script>
- <script defer src="radioview_scene.js?v=3"></script>
+ <script defer src="visor_grain.js?v=4"></script>
+ <script defer src="radioview_scene.js?v=7"></script>
  <script defer src="radioview_diagnostics.js?v=1"></script>
- <script defer src="radioview.js?v=5"></script>
+ <script defer src="radioview_calibration.js?v=2"></script>
+ <script defer src="radioview.js?v=11"></script>
+ <script defer src="rf_shape.js?v=1"></script>
 </head>
 <body>
 <main>
@@ -26,14 +28,38 @@
    <div class="toolbar">
     <div class="tabs" role="group" aria-label="Режим обзора">
      <button type="button" id="map-view" aria-pressed="true">Карта</button>
-     <button type="button" id="esp1-view" class="esp-a" aria-pressed="false" disabled>ESP A</button>
-     <button type="button" id="esp2-view" class="esp-b" aria-pressed="false" disabled>ESP B</button>
+     <button type="button" id="esp1-view" class="esp-a" aria-pressed="false" disabled>Обзор ESP A</button>
+     <button type="button" id="esp2-view" class="esp-b" aria-pressed="false" disabled>Обзор ESP B</button>
     </div>
     <div class="view-controls"><output id="view-label">План помещения</output>
+     <button type="button" id="calibration-open" aria-expanded="false" aria-controls="calibration" disabled>Калибровка клеток</button>
      <button type="button" id="full-view" hidden>На весь экран</button></div>
    </div>
+   <section id="calibration" class="calibration" aria-label="Калибровка клеток" hidden>
+    <div id="calibration-setup" class="calibration-setup">
+     <p>Оставьте предложенные клетки или выберите свои на карте. Сначала запишем пустую комнату, затем дважды обойдём выбранные точки.</p>
+     <label class="calibration-picker">Добавить клетку <select id="calibration-picker"></select></label>
+     <div id="calibration-points" class="calibration-points" aria-label="Выбранные клетки по порядку"></div>
+     <div class="calibration-actions">
+      <button type="button" id="calibration-start" class="calibration-primary">Начать калибровку</button>
+      <button type="button" id="calibration-voice">Проверить голос</button>
+     </div>
+    </div>
+    <div id="calibration-step" class="calibration-step" hidden>
+     <div>
+      <div id="calibration-progress" class="calibration-progress"></div>
+      <strong id="calibration-target"></strong>
+      <p id="calibration-instruction"></p>
+     </div>
+     <output id="calibration-timer" aria-label="Осталось секунд"></output>
+     <button type="button" id="calibration-stop">Остановить</button>
+    </div>
+    <p id="calibration-status" role="status" hidden></p>
+    <p id="calibration-voice-status" class="muted" role="status" hidden></p>
+    <button type="button" id="calibration-train" class="calibration-primary" hidden>Обучить модель клеток</button>
+   </section>
    <div class="viewport" id="viewport">
-    <canvas id="room" tabindex="0" aria-label="Карта помещения. В режиме ESP вращайте обзор стрелками или перетаскиванием."></canvas>
+    <canvas id="room" tabindex="0" aria-label="Карта помещения и след изменений CSI в режиме обзора ESP. Стрелки и мышь поворачивают обзор комнаты."></canvas>
     <button type="button" id="exit-full-view" hidden>Свернуть</button>
     <div id="no-plan" class="empty" hidden>
      <strong>Сохраните контур помещения</strong>
@@ -49,6 +75,12 @@
     <p id="position" role="status">Ожидание данных</p>
     <p id="position-source" class="muted"></p>
    </section>
+   <section class="panel readout shape-preview">
+    <h2>Форма по CSI</h2>
+    <canvas id="rf-shape-output" width="160" height="200" aria-label="Оценка занятых клеток в вертикальной плоскости" hidden></canvas>
+    <p id="rf-shape-status" class="muted" role="status">Подключение…</p>
+    <a href="rf_shape.html">Записи формы без камеры</a>
+   </section>
    <section class="panel readout">
     <h2>Приёмники</h2>
     <label for="esp1-ip" class="esp-a">ESP A</label><select id="esp1-ip" disabled><option value="">Выберите IP</option></select>
@@ -60,12 +92,15 @@
     <p id="radio-status" class="muted" role="status"></p>
     <canvas id="spectrum" aria-label="Амплитуда принятых отсчётов I/Q"></canvas>
     <p class="muted graph-label">Амплитуда исходных I/Q</p>
-    <div class="grain-setting">
-     <label for="grain-gain">Яркость зерна</label><output id="grain-gain-value" for="grain-gain">×1,25</output>
-     <input id="grain-gain" type="range" min="0.5" max="2.5" step="0.05" value="1.25">
+    <div class="iq-trail-setting">
+     <label for="iq-trail-gain">Яркость следа I/Q</label><output id="iq-trail-gain-value" for="iq-trail-gain">×1,25</output>
+     <input id="iq-trail-gain" type="range" min="0.5" max="2.5" step="0.05" value="1.25">
+    </div>
+    <div class="iq-trail-legend" aria-label="Свежий след постепенно остывает">
+     <span>Свежий</span><span class="iq-trail-gradient" aria-hidden="true"></span><span>Остывает</span>
     </div>
     <div class="pose" id="pose-panel" hidden>
-     <h3>Оценка позы</h3>
+     <h3>Поза по CSI</h3>
      <canvas id="pose" aria-label="Плоская оценка суставов по CSI"></canvas>
     </div>
     <p id="pose-status" class="muted"></p>
